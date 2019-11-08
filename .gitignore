@@ -1,16 +1,22 @@
-# Extensions and prefixes.
+# Important directories.
+/out
+# https://cirosantilli.com/linux-kernel-module-cheat#docker
+/out.docker
+/data
+
+# Temporary files.
 *.tmp
 tmp.*
+*.tmp.*
 *~
-?*.gitignore
-gitignore*
+*.gitignore
+gitignore.*
 
-# Specific files.
-/data
-/gem5/out
+# https://cirosantilli.com/linux-kernel-module-cheat#prebuilt
 /lkmc-*.zip
-/out
-/out.*
+
+# https://cirosantilli.com/linux-kernel-module-cheat#bst-vs-heap-vs-hashmap
+*.dat
 
 # Python trash.
 *.pyc
@@ -23,11 +29,11 @@ __pycache__
 *.out
 
 # Kernel modules.
-.cache.mk
+*.ko
 *.ko.cmd
+*.mod.c
 *.o.cmd
+.cache.mk
 .tmp_versions
 Module.symvers
-*.ko
-*.mod.c
 modules.order

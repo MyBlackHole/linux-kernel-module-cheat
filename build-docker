@@ -7,14 +7,13 @@ import tarfile
 import common
 from shell_helpers import LF
 
-
 class DockerComponent(self.Component):
     def get_argparse_args(self):
         return {
             'description': '''\
 Build a guest root filesystem based on prebuilt Docker Ubuntu root filesystems.
 
-See also:https://github.com/cirosantilli/linux-kernel-module-cheat#ubuntu-guest-setup
+See also: https://github.com/cirosantilli/linux-kernel-module-cheatTODO#ubuntu-guest-setup
 '''
         }
 
@@ -23,7 +22,7 @@ See also:https://github.com/cirosantilli/linux-kernel-module-cheat#ubuntu-guest-
         container_name = 'lkmc-guest'
         target_dir = os.path.join('/root', 'linux-kernel-module-cheat')
         os.makedirs(build_dir, exist_ok=True)
-        containers = subprocess.check_output([
+        containers = self.sh.check_output([
                 'docker',
                 'ps',
                 '-a',

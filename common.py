@@ -1,36 +1,44 @@
 #!/usr/bin/env python3
 
 import argparse
+import bisect
 import collections
 import copy
 import datetime
 import enum
+import functools
 import glob
-import imp
 import inspect
+import itertools
 import json
 import math
-import multiprocessing
 import os
 import platform
+import pathlib
+import queue
 import re
 import shutil
 import signal
 import subprocess
 import sys
+import threading
+from typing import Union
 import time
 import urllib
 import urllib.request
 
-import cli_function
-import shell_helpers
 from shell_helpers import LF
+import cli_function
+import path_properties
+import shell_helpers
+import thread_pool
 
 common = sys.modules[__name__]
 
 # Fixed parameters that don't depend on CLI arguments.
 consts = {}
 consts['repo_short_id'] = 'lkmc'
+consts['linux_kernel_version'] = '5.2.1'
 # https://stackoverflow.com/questions/20010199/how-to-determine-if-a-process-runs-inside-lxc-docker
 consts['in_docker'] = os.path.exists('/.dockerenv')
 consts['root_dir'] = os.path.dirname(os.path.abspath(__file__))
@@ -56,8 +64,10 @@ consts['kernel_modules_subdir'] = 'kernel_modules'
 consts['kernel_modules_source_dir'] = os.path.join(consts['root_dir'], consts['kernel_modules_subdir'])
 consts['userland_subdir'] = 'userland'
 consts['userland_source_dir'] = os.path.join(consts['root_dir'], consts['userland_subdir'])
-consts['userland_build_ext'] = '.out'
-consts['include_subdir'] = 'include'
+consts['userland_source_arch_dir'] = os.path.join(consts['userland_source_dir'], 'arch')
+consts['userland_executable_ext'] = '.out'
+consts['baremetal_executable_ext'] = '.elf'
+consts['include_subdir'] = consts['repo_short_id']
 consts['include_source_dir'] = os.path.join(consts['root_dir'], consts['include_subdir'])
 consts['submodules_dir'] = os.path.join(consts['root_dir'], 'submodules')
 consts['buildroot_source_dir'] = os.path.join(consts['submodules_dir'], 'buildroot')
@@ -92,39 +102,84 @@ consts['sha'] = common.git_sha(consts['root_dir'])
 consts['release_dir'] = os.path.join(consts['out_dir'], 'release')
 consts['release_zip_file'] = os.path.join(consts['release_dir'], 'lkmc-{}.zip'.format(consts['sha']))
 consts['github_repo_id'] = 'cirosantilli/linux-kernel-module-cheat'
+consts['github_repo_url'] = 'https://github.com/' + consts['github_repo_id']
+consts['homepage_url'] = 'https://cirosantilli.com/linux-kernel-module-cheat'
 consts['asm_ext'] = '.S'
 consts['c_ext'] = '.c'
 consts['cxx_ext'] = '.cpp'
 consts['header_ext'] = '.h'
 consts['kernel_module_ext'] = '.ko'
 consts['obj_ext'] = '.o'
-consts['config_file'] = os.path.join(consts['data_dir'], 'config.py')
-consts['magic_fail_string'] = b'lkmc_test_fail'
+# https://cirosantilli.com/linux-kernel-module-cheat#baremetal-cpp
+consts['baremetal_build_in_exts'] = [
+    consts['asm_ext'],
+    consts['c_ext'],
+]
+consts['build_in_exts'] = consts['baremetal_build_in_exts'] + [
+    consts['cxx_ext']
+]
+consts['userland_out_exts'] = [
+    consts['userland_executable_ext'],
+    consts['obj_ext'],
+]
+consts['default_config_file'] = os.path.join(consts['data_dir'], 'config.py')
+consts['serial_magic_exit_status_regexp_string'] = b'lkmc_exit_status_(\d+)'
 consts['baremetal_lib_basename'] = 'lib'
+consts['emulator_userland_only_short_to_long_dict'] = collections.OrderedDict([
+    ('n', 'native'),
+])
+consts['all_userland_only_emulators'] = set()
+for key in consts['emulator_userland_only_short_to_long_dict']:
+    consts['all_userland_only_emulators'].add(key)
+    consts['all_userland_only_emulators'].add(consts['emulator_userland_only_short_to_long_dict'][key])
 consts['emulator_short_to_long_dict'] = collections.OrderedDict([
     ('q', 'qemu'),
     ('g', 'gem5'),
 ])
+consts['emulator_short_to_long_dict'].update(consts['emulator_userland_only_short_to_long_dict'])
 consts['all_long_emulators'] = [consts['emulator_short_to_long_dict'][k] for k in consts['emulator_short_to_long_dict']]
 consts['emulator_choices'] = set()
 for key in consts['emulator_short_to_long_dict']:
     consts['emulator_choices'].add(key)
     consts['emulator_choices'].add(consts['emulator_short_to_long_dict'][key])
 consts['host_arch'] = platform.processor()
+consts['guest_lkmc_home'] = os.sep + consts['repo_short_id']
+consts['build_type_choices'] = [
+    # -O2 -g
+    'opt',
+    # -O0 -g
+    'debug'
+]
+consts['build_type_default'] = 'opt'
+
+class ExitLoop(Exception):
+    pass
 
 class LkmcCliFunction(cli_function.CliFunction):
     '''
     Common functionality shared across our CLI functions:
 
     * command timing
-    * some common flags, e.g.: --arch, --dry-run, --quiet, --verbose
+    * a lot some common flags, e.g.: --arch, --dry-run, --quiet, --verbose
+    * a lot of helpers that depend on self.env
+    +
+    self.env contains the command line arguments + a ton of values derived from those.
+    +
+    It would be beautiful to do this evaluation in a lazy way, e.g. with functions +
+    cache decorators:
+    https://stackoverflow.com/questions/815110/is-there-a-decorator-to-simply-cache-function-return-values
     '''
-    def __init__(self, *args, defaults=None, supported_archs=None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        defaults=None,
+        **kwargs
+    ):
         '''
         :ptype defaults: Dict[str,Any]
         :param defaults: override the default value of an argument
         '''
-        kwargs['config_file'] = consts['config_file']
+        kwargs['default_config_file'] = consts['default_config_file']
         kwargs['extra_config_params'] = os.path.basename(inspect.getfile(self.__class__))
         if defaults is None:
             defaults = {}
@@ -132,7 +187,7 @@ class LkmcCliFunction(cli_function.CliFunction):
         self._is_common = True
         self._common_args = set()
         super().__init__(*args, **kwargs)
-        self.supported_archs = supported_archs
+        self.print_lock = threading.Lock()
 
         # Args for all scripts.
         arches = consts['arch_short_to_long_dict']
@@ -200,12 +255,28 @@ Which toolchain binaries to use:
 '''
         )
         self.add_argument(
-            '--print-time',
-            default=True,
+            '--march',
             help='''\
-Print how long it took to run the command at the end.
-Implied by --quiet.
+GCC -march option to use. Currently only used for the more LKMC-specific builds such as
+./build-userland and ./build-baremetal. Maybe we will use it for more things some day.
 '''
+        )
+        self.add_argument(
+            '--mode',
+            choices=('userland', 'baremetal'),
+            default=None,
+            help='''Differentiate between userland and baremetal for scripts that can do both.
+./run differentiates between them based on the --userland and --baremetal options,
+however those options take arguments, Certain scripts can be run on either user or baremetal mode.
+If given, this differentiates between them.
+'''
+        )
+        self.add_argument(
+            '-j',
+            '--nproc',
+            default=len(os.sched_getaffinity(0)),
+            type=int,
+            help='''Number of processors (Jobs) to use for the action.''',
         )
         self.add_argument(
             '-q',
@@ -221,6 +292,22 @@ TODO: implement fully, some stuff is escaping it currently.
             default=True,
             help='''\
 Stop running at the first failed test.
+'''
+        )
+        self.add_argument(
+            '--show-cmds',
+            default=True,
+            help='''\
+Print the exact Bash command equivalents being run by this script.
+Implied by --quiet.
+'''
+        )
+        self.add_argument(
+            '--show-time',
+            default=True,
+            help='''\
+Print how long it took to run the command at the end.
+Implied by --quiet.
 '''
         )
         self.add_argument(
@@ -252,7 +339,8 @@ Default: {}
         )
         self.add_argument(
             '--gem5-build-type',
-            default='opt',
+            choices=consts['build_type_choices'],
+            default=consts['build_type_default'],
             help='gem5 build type, most often used for "debug" builds.'
         )
         self.add_argument(
@@ -266,7 +354,7 @@ Use the given directory as the gem5 source tree. Ignore `--gem5-worktree`.
             '--gem5-worktree',
             help='''\
 Create and use a git worktree of the gem5 submodule.
-See: https://github.com/cirosantilli/linux-kernel-module-cheat#gem5-worktree
+See: https://cirosantilli.com/linux-kernel-module-cheat#gem5-worktree
 '''
         )
 
@@ -295,7 +383,7 @@ Use the given directory as the Linux source tree.
             '--initramfs',
             default=False,
             help='''\
-See: https://github.com/cirosantilli/linux-kernel-module-cheat#initramfs
+See: https://cirosantilli.com/linux-kernel-module-cheat#initramfs
 '''
         )
         self.add_argument(
@@ -304,7 +392,7 @@ See: https://github.com/cirosantilli/linux-kernel-module-cheat#initramfs
             help='''\
 For Buildroot: create a CPIO root filessytem.
 For QEMU use that CPUI root filesystem initrd instead of the default ext2.
-See: https://github.com/cirosantilli/linux-kernel-module-cheat#initrd
+See: https://cirosantilli.com/linux-kernel-module-cheat#initrd
 '''
         )
 
@@ -315,10 +403,8 @@ See: https://github.com/cirosantilli/linux-kernel-module-cheat#initrd
             help='''\
 Use the given baremetal executable instead of the Linux kernel.
 
-If the path is absolute, it is used as is.
-
-If the path is relative, we assume that it points to a source code
-inside baremetal/ and then try to use corresponding executable.
+If the path points to a source code inside baremetal/, then the
+corresponding executable is automatically found.
 '''
         )
 
@@ -370,15 +456,20 @@ Use the docker download Ubuntu root filesystem instead of the default Buildroot 
 
         # QEMU.
         self.add_argument(
-            '-Q',
             '--qemu-build-id',
             default=consts['default_build_id'],
             help='QEMU build ID. Allows you to keep multiple separate QEMU builds.'
         )
         self.add_argument(
+            '--qemu-build-type',
+            choices=consts['build_type_choices'],
+            default=consts['build_type_default'],
+            help='QEMU build type, most often used for "debug" vs optimized builds.'
+        )
+        self.add_argument(
             '--qemu-which',
-            choices=['lkmc', 'host'],
-            default='lkmc',
+            choices=[consts['repo_short_id'], 'host'],
+            default=consts['repo_short_id'],
             help='''\
 Which qemu binaries to use: qemu-system-, qemu-, qemu-img, etc.:
 - lkmc: the ones we built with ./build-qemu
@@ -389,12 +480,32 @@ Which qemu binaries to use: qemu-system-, qemu-, qemu-img, etc.:
             '--machine',
             help='''\
 Machine type:
-* QEMU default: virt
-* gem5 default: VExpress_GEM5_V1
+
+* QEMU default: -machine virt
+* gem5 default: --machine-type VExpress_GEM5_V1
+
+More infor on platforms at:
+https://cirosantilli.com/linux-kernel-module-cheat#gem5-arm-platforms
 '''
         )
 
         # Userland.
+        self.add_argument(
+            '--package',
+            action='append',
+            help='''\
+Request to install a package in the target root filesystem, or indicate that it is present
+when building examples that rely on it or running tests for those examples.
+''',
+        )
+        self.add_argument(
+            '--package-all',
+            action='store_true',
+            help='''\
+Indicate that all packages used by our userland/ examples with --package
+are available.
+''',
+        )
         self.add_argument(
             '--static',
             default=False,
@@ -404,7 +515,8 @@ if one was not given explicitly.
 ''',
         )
         self.add_argument(
-            '-u', '--userland',
+            '-u',
+            '--userland',
             help='''\
 Run the given userland executable in user mode instead of booting the Linux kernel
 in full system mode. In gem5, user mode is called Syscall Emulation (SE) mode and
@@ -424,14 +536,49 @@ CLI arguments to pass to the userland executable.
 
         # Run.
         self.add_argument(
-            '-n', '--run-id', default='0',
+            '--background',
+            default=False,
             help='''\
-ID for run outputs such as gem5's m5out. Allows you to do multiple runs,
-and then inspect separate outputs later in different output directories.
+Make programs that would take over the terminal such as QEMU full system run on the
+background instead.
+
+Currently only implemented for ./run.
+
+Interactive input cannot be given.
+
+Send QEMU serial output to a file instead of the host terminal.
+
+TODO: use a port instead. If only there was a way to redirect a serial to multiple
+places, both to a port and a file? We use the file currently to be able to have
+any output at all.
+https://superuser.com/questions/1373226/how-to-redirect-qemu-serial-output-to-both-a-file-and-the-terminal-or-a-port
 '''
         )
         self.add_argument(
-            '-P', '--prebuilt', default=False,
+            '--in-tree',
+            default=False,
+            help='''\
+Place build output inside source tree to conveniently run it, especially when
+building with the host native toolchain.
+
+When running, use in-tree executables instead of out-of-tree ones,
+userland/c/hello resolves userland/c/hello.out instead of the out-of-tree one.
+
+Currently only supported by userland scripts such as ./build-userland and
+./run --userland.
+''',
+        )
+        self.add_argument(
+            '--port-offset',
+            type=int,
+            help='''\
+Increase the ports to be used such as for GDB by an offset to run multiple
+instances in parallel. Default: the run ID (-n) if that is an integer, otherwise 0.
+'''
+        )
+        self.add_argument(
+            '--prebuilt',
+            default=False,
             help='''\
 Use prebuilt packaged host utilities as much as possible instead
 of the ones we built ourselves. Saves build time, but decreases
@@ -439,10 +586,11 @@ the likelihood of incompatibilities.
 '''
         )
         self.add_argument(
-            '--port-offset', type=int,
+            '--run-id',
+            default='0',
             help='''\
-Increase the ports to be used such as for GDB by an offset to run multiple
-instances in parallel. Default: the run ID (-n) if that is an integer, otherwise 0.
+ID for run outputs such as gem5's m5out. Allows you to do multiple runs,
+and then inspect separate outputs later in different output directories.
 '''
         )
 
@@ -456,7 +604,7 @@ instances in parallel. Default: the run ID (-n) if that is an integer, otherwise
         self.add_argument(
             '--all-emulators', default=False,
             help='''\
-Run action for all supported --emulators emulators. Ignore --emulators.
+Run action for all supported emulators. Ignore --emulator.
 '''.format(emulators_string)
         )
         self.add_argument(
@@ -469,24 +617,50 @@ Run action for all supported --emulators emulators. Ignore --emulators.
             help='''\
 Emulator to use. If given multiple times, semantics are similar to --arch.
 Valid emulators: {}
+
+"native" means running natively on host. It is only supported for userland,
+and you must have built the program for native running, see:
+https://cirosantilli.com/linux-kernel-module-cheat#userland-setup-getting-started-natively
+Incompatible archs are skipped.
 '''.format(emulators_string)
         )
         self._is_common = False
 
     def __call__(self, *args, **kwargs):
         '''
-        For Python code calls, in addition to base:
+        For Python code calls, in addition to base class behaviour:
 
-        - print the CLI equivalent of the call
-        - automatically forward common arguments
+        * print the CLI equivalent of the call
+        * automatically forward common arguments
         '''
         print_cmd = ['./' + self.extra_config_params, LF]
+        if 'print_cmd_oneline' in kwargs:
+            force_oneline = kwargs['print_cmd_oneline']
+            del kwargs['print_cmd_oneline']
+        else:
+            force_oneline=False
         for line in self.get_cli(**kwargs):
             print_cmd.extend(line)
             print_cmd.append(LF)
         if not ('quiet' in kwargs and kwargs['quiet']):
-            shell_helpers.ShellHelpers().print_cmd(print_cmd)
+            shell_helpers.ShellHelpers().print_cmd(
+                print_cmd,
+                force_oneline=force_oneline
+            )
         return super().__call__(**kwargs)
+
+    def _handle_thread_pool_errors(self, my_thread_pool):
+        handle_output_result = my_thread_pool.get_handle_output_result()
+        if handle_output_result is not None:
+            work_function_input, work_function_return, exception = handle_output_result
+            if not type(exception) is thread_pool.ThreadPoolExitException:
+                print('work_function or handle_output raised unexpectedly:')
+                print(thread_pool.ThreadPool.exception_traceback_string(exception), end='')
+                print('work_function_input: {}'.format(work_function_input))
+                print('work_function_return: {}'.format(work_function_return))
+            return 1
+        else:
+            return 0
 
     def _init_env(self, env):
         '''
@@ -509,20 +683,42 @@ Valid emulators: {}
             else:
                 env['gem5_build_id'] = consts['default_build_id']
         env['is_arm'] = False
+        # Our approach is as follows:
+        #
+        # * compilers: control maximum arch version emitted explicitly -mcpu
+        # +
+        # This helps to prevent blowing up simulation unnecessarily.
+        # +
+        # It does not matter if we miss any perf features for QEMU which is functional,
+        # but it could matter for gem5 perf simulations.
+        # * assemblers: enable as many features as possible.
+        # +
+        # Well, if I'm explicitly writing down the instructions, I want
+        # my emulator to blow up in peace!
+        # * emulators: enable as many features as possible
+        # +
+        # This is the gem5 default behavior, for QEMU TODO not sure if default,
+        # but we select it explicitly with -cpu max.
+        # https://habkost.net/posts/2017/03/qemu-cpu-model-probing-story.html
+        # +
+        # We doe this because QEMU does not add all possible Cortex Axx, there are
+        # just too many, and gem5 does not allow selecting lower feature in general.
         if env['arch'] == 'arm':
             env['armv'] = 7
-            env['mcpu'] = 'cortex-a15'
             env['buildroot_toolchain_prefix'] = 'arm-buildroot-linux-gnueabihf'
             env['crosstool_ng_toolchain_prefix'] = 'arm-unknown-eabi'
             env['ubuntu_toolchain_prefix'] = 'arm-linux-gnueabihf'
             env['is_arm'] = True
+            if not env['_args_given']['march']:
+                env['march'] = 'armv8-a'
         elif env['arch'] == 'aarch64':
             env['armv'] = 8
-            env['mcpu'] = 'cortex-a57'
             env['buildroot_toolchain_prefix'] = 'aarch64-buildroot-linux-gnu'
             env['crosstool_ng_toolchain_prefix'] = 'aarch64-unknown-elf'
             env['ubuntu_toolchain_prefix'] = 'aarch64-linux-gnu'
             env['is_arm'] = True
+            if not env['_args_given']['march']:
+                env['march'] = 'armv8-a+lse'
         elif env['arch'] == 'x86_64':
             env['crosstool_ng_toolchain_prefix'] = 'x86_64-unknown-elf'
             env['gem5_arch'] = 'X86'
@@ -545,14 +741,6 @@ Valid emulators: {}
             else:
                 if not env['_args_given']['machine']:
                     env['machine'] = 'virt'
-                    if env['arch'] == 'arm':
-                        # highmem=off needed since v3.0.0 due to:
-                        # http://lists.nongnu.org/archive/html/qemu-discuss/2018-08/msg00034.html
-                        env['machine2'] = 'highmem=off'
-                    elif env['arch'] == 'aarch64':
-                        env['machine2'] = 'gic_version=3'
-        else:
-            env['machine2'] = None
 
         # Buildroot
         env['buildroot_build_dir'] = join(env['buildroot_out_dir'], 'build', env['buildroot_build_id'], env['arch'])
@@ -577,15 +765,37 @@ Valid emulators: {}
         env['linux_buildroot_build_dir'] = join(env['buildroot_build_build_dir'], 'linux-custom')
 
         # QEMU
-        env['qemu_build_dir'] = join(env['out_dir'], 'qemu', env['qemu_build_id'])
-        env['qemu_executable_basename'] = 'qemu-system-{}'.format(env['arch'])
-        env['qemu_executable'] = join(env['qemu_build_dir'], '{}-softmmu'.format(env['arch']), env['qemu_executable_basename'])
+        env['qemu_build_dir'] = join(
+            env['out_dir'],
+            'qemu',
+            env['qemu_build_id'],
+            env['qemu_build_type']
+        )
         env['qemu_img_basename'] = 'qemu-img'
         env['qemu_img_executable'] = join(env['qemu_build_dir'], env['qemu_img_basename'])
+        if env['userland'] is None:
+            env['qemu_executable_basename'] = 'qemu-system-{}'.format(env['arch'])
+        else:
+            env['qemu_executable_basename'] = 'qemu-{}'.format(env['arch'])
+        if env['qemu_which'] == 'host':
+            env['qemu_executable'] = env['qemu_executable_basename']
+        else:
+            if env['userland'] is None:
+                env['qemu_executable'] = join(
+                    env['qemu_build_dir'],
+                    '{}-softmmu'.format(env['arch']),
+                    env['qemu_executable_basename']
+                )
+            else:
+                env['qemu_executable'] = join(
+                    self.env['qemu_build_dir'],
+                    '{}-linux-user'.format(self.env['arch']),
+                    env['qemu_executable_basename']
+                )
 
         # gem5
         if not env['_args_given']['gem5_build_dir']:
-            env['gem5_build_dir'] = join(env['gem5_out_dir'], env['gem5_build_id'], env['gem5_build_type'])
+            env['gem5_build_dir'] = join(env['gem5_out_dir'], env['gem5_build_id'])
         env['gem5_fake_iso'] = join(env['gem5_out_dir'], 'fake.iso')
         env['gem5_m5term'] = join(env['gem5_build_dir'], 'm5term')
         env['gem5_build_build_dir'] = join(env['gem5_build_dir'], 'build')
@@ -612,10 +822,10 @@ Valid emulators: {}
         env['crosstool_ng_buildid_dir'] = join(env['crosstool_ng_out_dir'], 'build', env['crosstool_ng_build_id'])
         env['crosstool_ng_install_dir'] = join(env['crosstool_ng_buildid_dir'], 'install', env['arch'])
         env['crosstool_ng_bin_dir'] = join(env['crosstool_ng_install_dir'], 'bin')
-        env['crosstool_ng_util_dir'] = join(env['crosstool_ng_buildid_dir'], 'util')
-        env['crosstool_ng_config'] = join(env['crosstool_ng_util_dir'], '.config')
-        env['crosstool_ng_defconfig'] = join(env['crosstool_ng_util_dir'], 'defconfig')
-        env['crosstool_ng_executable'] = join(env['crosstool_ng_util_dir'], 'ct-ng')
+        env['crosstool_ng_source_copy_dir'] = join(env['crosstool_ng_buildid_dir'], 'source')
+        env['crosstool_ng_config'] = join(env['crosstool_ng_source_copy_dir'], '.config')
+        env['crosstool_ng_defconfig'] = join(env['crosstool_ng_source_copy_dir'], 'defconfig')
+        env['crosstool_ng_executable'] = join(env['crosstool_ng_source_copy_dir'], 'ct-ng')
         env['crosstool_ng_build_dir'] = join(env['crosstool_ng_buildid_dir'], 'build')
         env['crosstool_ng_download_dir'] = join(env['crosstool_ng_out_dir'], 'download')
 
@@ -625,7 +835,7 @@ Valid emulators: {}
         env['stats_file'] = join(env['m5out_dir'], 'stats.txt')
         env['gem5_trace_txt_file'] = join(env['m5out_dir'], 'trace.txt')
         env['gem5_guest_terminal_file'] = join(env['m5out_dir'], 'system.terminal')
-        env['gem5_readfile'] = join(env['gem5_run_dir'], 'readfile')
+        env['gem5_readfile_file'] = join(env['gem5_run_dir'], 'readfile')
         env['gem5_termout_file'] = join(env['gem5_run_dir'], 'termout.txt')
         env['qemu_run_dir'] = join(env['run_dir_base'], 'qemu', env['arch'], str(env['run_id']))
         env['qemu_termout_file'] = join(env['qemu_run_dir'], 'termout.txt')
@@ -665,7 +875,10 @@ Valid emulators: {}
             env['executable'] = env['qemu_executable']
             env['run_dir'] = env['qemu_run_dir']
             env['termout_file'] = env['qemu_termout_file']
-            env['guest_terminal_file'] = env['qemu_termout_file']
+            if env['background']:
+                env['guest_terminal_file'] = env['qemu_background_serial_file']
+            else:
+                env['guest_terminal_file'] = env['qemu_termout_file']
             env['trace_txt_file'] = env['qemu_trace_txt_file']
         env['run_cmd_file'] = join(env['run_dir'], 'run.sh')
 
@@ -695,9 +908,16 @@ Valid emulators: {}
             env['linux_image'] = env['lkmc_linux_image']
         env['linux_config'] = join(env['linux_build_dir'], '.config')
         if env['emulator']== 'gem5':
-            env['userland_quit_cmd'] = '/gem5_exit.sh'
+            env['userland_quit_cmd'] = join(
+                env['guest_lkmc_home'],
+                'gem5_exit.sh'
+            )
         else:
-            env['userland_quit_cmd'] = '/poweroff.out'
+            env['userland_quit_cmd'] = join(
+                env['guest_lkmc_home'],
+                'linux',
+                'poweroff' + env['userland_executable_ext']
+            )
         env['ramfs'] = env['initrd'] or env['initramfs']
         if env['ramfs']:
             env['initarg'] = 'rdinit'
@@ -705,13 +925,24 @@ Valid emulators: {}
             env['initarg'] = 'init'
         env['quit_init'] = '{}={}'.format(env['initarg'], env['userland_quit_cmd'])
 
+        # Userland
+        env['userland_source_arch_arch_dir'] = join(env['userland_source_arch_dir'], env['arch'])
+        if env['in_tree']:
+            env['userland_build_dir'] = self.env['userland_source_dir']
+        else:
+            env['userland_build_dir'] = join(env['out_dir'], 'userland', env['userland_build_id'], env['arch'])
+        env['package'] = set(env['package'])
+
         # Kernel modules.
         env['kernel_modules_build_dir'] = join(env['kernel_modules_build_base_dir'], env['arch'])
         env['kernel_modules_build_subdir'] = join(env['kernel_modules_build_dir'], env['kernel_modules_subdir'])
         env['kernel_modules_build_host_dir'] = join(env['kernel_modules_build_base_dir'], 'host')
         env['kernel_modules_build_host_subdir'] = join(env['kernel_modules_build_host_dir'], env['kernel_modules_subdir'])
-        env['userland_build_dir'] = join(env['out_dir'], 'userland', env['userland_build_id'], env['arch'])
+
+        # Overlay.
+        # https://cirosantilli.com/linux-kernel-module-cheat#buildroot_packages-directory
         env['out_rootfs_overlay_dir'] = join(env['out_dir'], 'rootfs_overlay', env['arch'])
+        env['out_rootfs_overlay_lkmc_dir'] = join(env['out_rootfs_overlay_dir'], env['repo_short_id'])
         env['out_rootfs_overlay_bin_dir'] = join(env['out_rootfs_overlay_dir'], 'bin')
 
         # Baremetal.
@@ -726,18 +957,38 @@ Valid emulators: {}
             env['simulator_name'] = 'qemu'
         env['baremetal_build_dir'] = join(env['out_dir'], 'baremetal', env['arch'], env['simulator_name'], env['machine'])
         env['baremetal_build_lib_dir'] = join(env['baremetal_build_dir'], env['baremetal_lib_basename'])
-        env['baremetal_build_ext'] = '.elf'
+        env['baremetal_syscalls_basename_noext'] = 'syscalls'
+        env['baremetal_syscalls_src'] = os.path.join(
+            env['baremetal_source_lib_dir'],
+            env['baremetal_syscalls_basename_noext'] + self.env['c_ext']
+        )
+        env['baremetal_syscalls_obj'] = os.path.join(
+            self.env['baremetal_build_lib_dir'],
+            env['baremetal_syscalls_basename_noext'] + self.env['obj_ext']
+        )
+        env['baremetal_syscalls_asm_src'] = os.path.join(
+            self.env['baremetal_source_lib_dir'],
+            env['baremetal_syscalls_basename_noext'] + '_asm' + self.env['asm_ext']
+        )
+        env['baremetal_syscalls_asm_obj'] = os.path.join(
+            self.env['baremetal_build_lib_dir'],
+            env['baremetal_syscalls_basename_noext'] + '_asm' + self.env['obj_ext']
+        )
 
         # Userland / baremetal common source.
-        env['common_basename_noext'] = 'lkmc'
-        env['common_c'] = common_c = os.path.join(
+        env['common_basename_noext'] = env['repo_short_id']
+        env['common_c'] = os.path.join(
             env['root_dir'],
             env['common_basename_noext'] + env['c_ext']
         )
-        env['common_h'] = common_c = os.path.join(
+        env['common_h'] = os.path.join(
             env['root_dir'],
             env['common_basename_noext'] + env['header_ext']
         )
+        if env['mode'] == 'baremetal':
+            env['build_dir'] = env['baremetal_build_dir']
+        elif env['mode'] == 'userland':
+            env['build_dir'] = env['userland_build_dir']
 
         # Docker
         env['docker_build_dir'] = join(env['out_dir'], 'docker', env['arch'])
@@ -753,27 +1004,31 @@ Valid emulators: {}
             env['qcow2_file'] = env['buildroot_qcow2_file']
 
         # Image
-        if env['_args_given']['baremetal']:
+        if env['baremetal'] is not None:
             env['disk_image'] = env['gem5_fake_iso']
-            if env['baremetal'] == 'all':
-                path = env['baremetal']
-            else:
-                path = self.resolve_executable(
-                    env['baremetal'],
-                    env['baremetal_source_dir'],
-                    env['baremetal_build_dir'],
-                    env['baremetal_build_ext'],
-                )
-                source_path_noext = os.path.splitext(join(
-                    env['baremetal_source_dir'],
-                    os.path.relpath(path, env['baremetal_build_dir'])
-                ))[0]
-                for ext in [env['c_ext'], env['asm_ext']]:
-                    source_path = source_path_noext + ext
-                    if os.path.exists(source_path):
-                        env['source_path'] = source_path
-                        break
-            env['image'] = path
+            env['image'] = self.resolve_baremetal_executable(env['baremetal'])
+            source_path_noext = os.path.splitext(join(
+                env['root_dir'],
+                env['image'][len(env['baremetal_build_dir']) + 1:]
+            ))[0]
+            env['source_path'] = None
+            for ext in env['baremetal_build_in_exts']:
+                source_path = source_path_noext + ext
+                if os.path.exists(source_path):
+                    env['source_path'] = source_path
+                    break
+        elif env['userland'] is not None:
+            env['image'] = self.resolve_userland_executable(env['userland'])
+            source_path_noext = os.path.splitext(join(
+                env['userland_source_dir'],
+                env['image'][len(env['userland_build_dir']) + 1:]
+            ))[0]
+            env['source_path'] = None
+            for ext in env['build_in_exts']:
+                source_path = source_path_noext + ext
+                if os.path.exists(source_path):
+                    env['source_path'] = source_path
+                    break
         else:
             if env['emulator'] == 'gem5':
                 env['image'] = env['vmlinux']
@@ -798,8 +1053,10 @@ lunch aosp_{}-eng
 '''.format(self.env['android_arch'])
 
         # Toolchain.
+        if env['baremetal'] and not env['_args_given']['mode']:
+            env['mode'] = 'baremetal'
         if not env['_args_given']['gcc_which']:
-            if env['baremetal']:
+            if env['mode'] == 'baremetal':
                 env['gcc_which'] = 'crosstool-ng'
         if env['gcc_which'] == 'buildroot':
             env['toolchain_prefix'] = os.path.join(
@@ -807,19 +1064,26 @@ lunch aosp_{}-eng
                 env['buildroot_toolchain_prefix']
             )
             env['userland_library_dir'] = env['buildroot_target_dir']
+            env['pkg_config'] = env['buildroot_pkg_config']
         elif env['gcc_which'] == 'crosstool-ng':
             env['toolchain_prefix'] = os.path.join(
                 env['crosstool_ng_bin_dir'],
                 env['crosstool_ng_toolchain_prefix']
             )
         elif env['gcc_which'] == 'host':
-            env['toolchain_prefix'] = env['ubuntu_toolchain_prefix']
-            if env['arch'] == 'x86_64':
-                env['userland_library_dir'] = '/'
+            if env['arch'] == env['host_arch']:
+                env['toolchain_prefix'] = ''
+            else:
+                env['toolchain_prefix'] = env['ubuntu_toolchain_prefix']
+            if env['arch'] == env['host_arch']:
+                 env['userland_library_dir'] = '/'
+            elif env['arch'] == 'x86_64':
+                env['userland_library_dir'] = '/usr/x86_64-linux-gnu/'
             elif env['arch'] == 'arm':
                 env['userland_library_dir'] = '/usr/arm-linux-gnueabihf'
             elif env['arch'] == 'aarch64':
                 env['userland_library_dir'] = '/usr/aarch64-linux-gnu/'
+            env['pkg_config'] = 'pkg-config'
         elif env['gcc_which'] == 'host-baremetal':
             if env['arch'] == 'arm':
                 env['toolchain_prefix'] = 'arm-none-eabi'
@@ -827,8 +1091,20 @@ lunch aosp_{}-eng
                 raise Exception('There is no host baremetal chain for arch: ' + env['arch'])
         else:
             raise Exception('Unknown toolchain: ' + env['gcc_which'])
-        env['gcc'] = self.get_toolchain_tool('gcc')
-        env['gxx'] = self.get_toolchain_tool('g++')
+        if env['toolchain_prefix'] == '':
+            env['toolchain_prefix_dash'] = ''
+        else:
+            env['toolchain_prefix_dash'] = '{}-'.format(env['toolchain_prefix'])
+        env['gcc_path'] = self.get_toolchain_tool('gcc')
+        env['gxx_path'] = self.get_toolchain_tool('g++')
+        env['ld_path'] = self.get_toolchain_tool('ld')
+        if env['gcc_which'] == 'host':
+            if env['arch'] == 'x86_64':
+                env['gdb_path'] = 'gdb'
+            else:
+                env['gdb_path'] = 'gdb-multiarch'
+        else:
+            env['gdb_path'] = self.get_toolchain_tool('gdb')
 
     def add_argument(self, *args, **kwargs):
         '''
@@ -844,12 +1120,25 @@ lunch aosp_{}-eng
             self._common_args.add(key)
         super().add_argument(*args, **kwargs)
 
+    def assert_is_subpath(self, subpath, parents):
+        is_subpath = False
+        for parent in parents:
+            if self.is_subpath(subpath, parent):
+                is_subpath = True
+        if not is_subpath:
+            raise Exception(
+                    'Can only accept targets inside:\n{}\nGiven: {}'.format(
+                    '\n'.join(parents),
+                    subpath
+                )
+            )
+
     def get_elf_entry(self, elf_file_path):
-        readelf_header = subprocess.check_output([
+        readelf_header = self.sh.check_output([
             self.get_toolchain_tool('readelf'),
             '-h',
             elf_file_path
-        ])
+        ]).decode()
         for line in readelf_header.decode().split('\n'):
             split = line.split()
             if line.startswith('  Entry point address:'):
@@ -883,7 +1172,13 @@ lunch aosp_{}-eng
         of the script.
         '''
         return {
-            key:self.env[key] for key in self._common_args if self.env['_args_given'][key]
+            key:self.env[key] for key in self._common_args if
+            (
+                # Args given on command line.
+                self.env['_args_given'][key] or
+                # Ineritance changed defaults.
+                key in self._defaults
+            )
         }
 
     def get_stats(self, stat_re=None, stats_file=None):
@@ -902,18 +1197,18 @@ lunch aosp_{}-eng
         return ret
 
     def get_toolchain_tool(self, tool):
-        return '{}-{}'.format(self.env['toolchain_prefix'], tool)
+        return '{}{}'.format(self.env['toolchain_prefix_dash'], tool)
 
     def github_make_request(
-            self,
-            authenticate=False,
-            data=None,
-            extra_headers=None,
-            path='',
-            subdomain='api',
-            url_params=None,
-            **extra_request_args
-        ):
+        self,
+        authenticate=False,
+        data=None,
+        extra_headers=None,
+        path='',
+        subdomain='api',
+        url_params=None,
+        **extra_request_args
+    ):
         if extra_headers is None:
             extra_headers = {}
         headers = {'Accept': 'application/vnd.github.v3+json'}
@@ -935,32 +1230,32 @@ lunch aosp_{}-eng
             _json = {}
         return _json
 
-    def import_path(self, basename):
-        '''
-        https://stackoverflow.com/questions/2601047/import-a-python-module-without-the-py-extension
-        https://stackoverflow.com/questions/31773310/what-does-the-first-argument-of-the-imp-load-source-method-do
-        '''
-        return imp.load_source(basename.replace('-', '_'), os.path.join(self.env['root_dir'], basename))
-
-    def import_path_main(self, path):
-        '''
-        Import an object of the Main class of a given file.
-
-        By convention, we call the main object of all our CLI scripts as Main.
-        '''
-        return self.import_path(path).Main()
-
-    def is_arch_supported(self, arch):
-        return self.supported_archs is None or arch in self.supported_archs
+    def is_arch_supported(self, arch, mode):
+        return not (
+            mode == 'baremetal' and
+            not arch in consts['crosstool_ng_supported_archs']
+        )
 
     def log_error(self, msg):
-        print('error: {}'.format(msg), file=sys.stdout)
+        with self.print_lock:
+            print('error: {}'.format(msg), file=sys.stdout)
 
     def log_info(self, msg='', flush=False, **kwargs):
-        if not self.env['quiet']:
-            print('{}'.format(msg), **kwargs)
-        if flush:
-            sys.stdout.flush()
+        with self.print_lock:
+            if not self.env['quiet']:
+                print('{}'.format(msg), **kwargs)
+            if flush:
+                sys.stdout.flush()
+
+    def log_warn(self, msg):
+        with self.print_lock:
+            print('warning: {}'.format(msg), file=sys.stdout)
+
+    def is_subpath(self, subpath, parent):
+        '''
+        https://stackoverflow.com/questions/3812849/how-to-check-whether-a-directory-is-a-sub-directory-of-another-directory
+        '''
+        return os.path.abspath(subpath).startswith(os.path.abspath(parent))
 
     def main(self, *args, **kwargs):
         '''
@@ -977,22 +1272,36 @@ lunch aosp_{}-eng
             real_archs = consts['all_long_archs']
         else:
             real_archs = env['archs']
-        if env['all_emulators']:
+        real_all_emulators = env['all_emulators']
+        if real_all_emulators:
             real_emulators = consts['all_long_emulators']
         else:
             real_emulators = env['emulators']
         return_value = 0
-        class GetOutOfLoop(Exception): pass
+        if env['_args_given']['show_cmds']:
+            show_cmds = env['show_cmds']
+        else:
+            show_cmds = not env['quiet']
+        self.setup(env)
         try:
-            ret = self.setup()
-            if ret is not None and ret != 0:
-                return_value = ret
-                raise GetOutOfLoop()
             for emulator in real_emulators:
                 for arch in real_archs:
                     if arch in env['arch_short_to_long_dict']:
                         arch = env['arch_short_to_long_dict'][arch]
-                    if self.is_arch_supported(arch):
+                    if emulator in env['emulator_short_to_long_dict']:
+                        emulator = env['emulator_short_to_long_dict'][emulator]
+                    if emulator == 'native':
+                        if arch != env['host_arch']:
+                            if real_all_archs:
+                                continue
+                            else:
+                                raise Exception('native emulator only supported in if target arch == host arch')
+                        if env['userland'] is None and not env['mode'] == 'userland':
+                            if real_all_emulators:
+                                continue
+                            else:
+                                raise Exception('native emulator only supported in user mode')
+                    if self.is_arch_supported(arch, env['mode']):
                         if not env['dry_run']:
                             start_time = time.time()
                         env['arch'] = arch
@@ -1007,8 +1316,9 @@ lunch aosp_{}-eng
                         self._init_env(self.env)
                         self.sh = shell_helpers.ShellHelpers(
                             dry_run=self.env['dry_run'],
-                            quiet=self.env['quiet'],
+                            quiet=(not show_cmds),
                         )
+                        self.setup_one()
                         ret = self.timed_main()
                         if not env['dry_run']:
                             end_time = time.time()
@@ -1017,11 +1327,10 @@ lunch aosp_{}-eng
                         if ret is not None and ret != 0:
                             return_value = ret
                             if self.env['quit_on_fail']:
-                                raise GetOutOfLoop()
+                                raise ExitLoop()
                     elif not real_all_archs:
                         raise Exception('Unsupported arch for this action: ' + arch)
-
-        except GetOutOfLoop:
+        except ExitLoop:
             pass
         ret = self.teardown()
         if ret is not None and ret != 0:
@@ -1043,15 +1352,6 @@ lunch aosp_{}-eng
         os.makedirs(self.env['qemu_run_dir'], exist_ok=True)
 
     @staticmethod
-    def need_rebuild(srcs, dst):
-        if not os.path.exists(dst):
-            return True
-        for src in srcs:
-            if os.path.getmtime(src) > os.path.getmtime(dst):
-                return True
-        return False
-
-    @staticmethod
     def seconds_to_hms(seconds):
         '''
         Seconds to hour:minute:seconds
@@ -1067,7 +1367,7 @@ lunch aosp_{}-eng
         return '{:02}:{:02}:{:02}'.format(int(hours), int(minutes), int(seconds))
 
     def print_time(self, ellapsed_seconds):
-        if self.env['print_time'] and not self.env['quiet']:
+        if self.env['show_time'] and not self.env['quiet']:
             print('time {}'.format(self.seconds_to_hms(ellapsed_seconds)))
 
     def raw_to_qcow2(self, qemu_which=False, reverse=False):
@@ -1103,49 +1403,99 @@ lunch aosp_{}-eng
             ]
         )
 
-    @staticmethod
-    def resolve_args(defaults, args, extra_args):
-        if extra_args is None:
-            extra_args = {}
-        argcopy = copy.copy(args)
-        argcopy.__dict__ = dict(list(defaults.items()) + list(argcopy.__dict__.items()) + list(extra_args.items()))
-        return argcopy
+    def resolve_executable(
+        self,
+        in_path,
+        magic_in_dirs,
+        magic_out_dir,
+        executable_ext
+    ):
+        '''
+        Resolve the path of an userland or baremetal executable.
 
-    def resolve_executable(self, in_path, magic_in_dir, magic_out_dir, out_ext):
-        if os.path.isabs(in_path):
-            return in_path
+        If it is in tree, resolve source paths to their corresponding executables.
+
+        If it is out of tree, return the same exact path as input.
+
+        If the input path is a file, add the executable extension automatically.
+
+        Directories map to the directories that would contain executable in that directory.
+        '''
+        if not self.env['dry_run'] and not os.path.exists(in_path):
+            raise Exception('Input path does not exist: ' + in_path)
+        if len(magic_in_dirs) > 1:
+            relative_subpath = self.env['root_dir']
         else:
-            paths = [
-                os.path.join(magic_out_dir, in_path),
-                os.path.join(
+            relative_subpath = magic_in_dirs[0]
+        for magic_in_dir in magic_in_dirs:
+            if self.is_subpath(in_path, magic_in_dir):
+                # Abspath needed to remove the trailing `/.` which makes e.g. rmrf fail.
+                out = os.path.abspath(os.path.join(
                     magic_out_dir,
-                    os.path.relpath(in_path, magic_in_dir),
-                )
-            ]
-            paths[:] = [os.path.splitext(path)[0] + out_ext for path in paths]
-            for path in paths:
-                if os.path.exists(path):
-                    return path
-            if not self.env['dry_run']:
-                raise Exception('Executable file not found. Tried:\n' + '\n'.join(paths))
+                    os.path.relpath(
+                        os.path.splitext(in_path)[0],
+                        relative_subpath
+                    )
+                ))
+                if os.path.isfile(in_path):
+                    out += executable_ext
+                return out
+        return in_path
 
-    def resolve_userland(self, path):
+    def resolve_targets(self, source_dirs, targets):
+        '''
+        Resolve userland or baremetal CLI provided targets to final paths.
+
+        Notably converts the toplevel directory into all source directories needed.
+        '''
+        if not targets:
+            targets = source_dirs.copy()
+        new_targets = []
+        for target in targets:
+            for resolved_target in self.toplevel_to_source_dirs(target, source_dirs):
+                self.assert_is_subpath(resolved_target, source_dirs)
+                new_targets.append(resolved_target)
+        return new_targets
+
+    def resolve_baremetal_executable(self, path):
         return self.resolve_executable(
             path,
-            self.env['userland_source_dir'],
-            self.env['userland_build_dir'],
-            self.env['userland_build_ext'],
+            [
+                self.env['baremetal_source_dir'],
+                self.env['userland_source_dir']
+            ],
+            self.env['baremetal_build_dir'],
+            self.env['baremetal_executable_ext'],
         )
 
-    def setup(self):
-        '''
-        Similar to timed_main, but gets run only once for all --arch and --emulator,
-        before timed_main.
+    def resolve_userland_executable(self, path):
+        return self.resolve_executable(
+            path,
+            [self.env['userland_source_dir']],
+            self.env['userland_build_dir'],
+            self.env['userland_executable_ext'],
+        )
 
-        Different from __init__, since at this point env has already been calculated,
-        so variables that don't depend on --arch or --emulator can be used.
+    def setup(self, env):
+        '''
+        Similar to setup run before all timed_main are called.
+
+        _init_env has not yet been called, so only primary CLI arguments may be used.
         '''
         pass
+
+    def setup_one(self):
+        '''
+        Run just before timed_main, after _init_env.
+        '''
+        pass
+
+    def toplevel_to_source_dirs(self, path, source_dirs):
+        path = os.path.abspath(path)
+        if path == self.env['root_dir']:
+            return source_dirs
+        else:
+            return [path]
 
     def timed_main(self):
         '''
@@ -1155,9 +1505,11 @@ lunch aosp_{}-eng
         '''
         pass
 
-    def teardown(self):
+    def teardown(self) -> Union[None,int]:
         '''
-        Similar to setup, but run after timed_main.
+        Similar to setup, but run once after all timed_main are called.
+
+        :return: if not None, the return integer gets used as the exit status of the program.
         '''
         pass
 
@@ -1175,14 +1527,187 @@ class BuildCliFunction(LkmcCliFunction):
             default=False,
             help='Clean the build instead of building.',
         ),
+        self._build_arguments = {
+            '--ccflags': {
+                'default': '',
+                'help': '''\
+Pass the given compiler flags to all languages (C, C++, Fortran, etc.)
+''',
+            },
+            '--force-rebuild': {
+                'default': False,
+                "help": '''\
+Force rebuild even if sources didn't change.
+''',
+            },
+            '--optimization-level': {
+                'default': '0',
+                'help': '''
+Use the given GCC -O optimization level.
+For some scripts, there are hard technical challenges why it cannot
+be implemented, e.g.: https://cirosantilli.com/linux-kernel-module-cheat#kernel-o0
+and for others such as gem5 have their custom mechanism:
+https://cirosantilli.com/linux-kernel-module-cheat#gem5-debug-build
+''',
+            }
+        }
+
+    def _add_argument(self, argument_name):
         self.add_argument(
-            '-j',
-            '--nproc',
-            default=multiprocessing.cpu_count(),
-            type=int,
-            help='Number of processors to use for the build.',
+            argument_name,
+            **self._build_arguments[argument_name]
         )
-        self.test_results = []
+
+    def _build_one(
+        self,
+        in_path,
+        out_path,
+        build_exts=None,
+        cc_flags=None,
+        cc_flags_after=None,
+        extra_objs=None,
+        extra_objs_userland_asm=None,
+        extra_objs_lkmc_common=None,
+        extra_objs_baremetal_bootloader=None,
+        extra_deps=None,
+        link=True,
+    ):
+        '''
+        Build one userland or baremetal executable.
+        '''
+        if cc_flags is None:
+            cc_flags = []
+        else:
+            cc_flags = cc_flags.copy()
+        if cc_flags_after is None:
+            cc_flags_after = []
+        else:
+            cc_flags_after = cc_flags_after.copy()
+        if extra_deps is None:
+            extra_deps = []
+        ret = 0
+        in_dir, in_basename = os.path.split(in_path)
+        in_dir_abs = os.path.abspath(in_dir)
+        dirpath_relative_root = in_dir_abs[len(self.env['root_dir']) + 1:]
+        dirpath_relative_root_components = dirpath_relative_root.split(os.sep)
+        dirpath_relative_root_components_len = len(dirpath_relative_root_components)
+        my_path_properties = path_properties.get(os.path.join(
+            dirpath_relative_root,
+            in_basename
+        ))
+        if my_path_properties.should_be_built(
+            self.env,
+            link,
+        ):
+            if extra_objs is None:
+                extra_objs= []
+            if link:
+                if self.env['mode'] == 'baremetal' or my_path_properties['extra_objs_lkmc_common']:
+                    extra_objs.extend(extra_objs_lkmc_common)
+                if (
+                    self.env['mode'] == 'baremetal' and
+                    not my_path_properties['extra_objs_disable_baremetal_bootloader']
+                ):
+                    extra_objs.extend(extra_objs_baremetal_bootloader)
+                if self.env['mode'] == 'userland':
+                    cc_flags_after.extend(['-pthread', LF])
+            if self.need_rebuild([in_path] + extra_objs + extra_deps, out_path):
+                cc_flags.extend(my_path_properties['cc_flags'])
+                if self.env['verbose']:
+                    cc_flags.extend([
+                        '-v', LF,
+                    ])
+                cc_flags_after.extend(my_path_properties['cc_flags_after'])
+                if my_path_properties['cc_pedantic']:
+                    cc_flags.extend(['-pedantic', LF])
+                if not link:
+                    cc_flags.extend(['-c', LF])
+                in_ext = os.path.splitext(in_path)[1]
+                if in_ext in (self.env['c_ext'], self.env['asm_ext']):
+                    cc = self.env['gcc_path']
+                    std = my_path_properties['c_std']
+                elif in_ext == self.env['cxx_ext']:
+                    cc = self.env['gxx_path']
+                    std = my_path_properties['cxx_std']
+                if self.env['is_arm']:
+                    if in_ext == self.env['asm_ext']:
+                        cc_flags.extend([
+                            '-Xassembler', '-march=all', LF,
+                        ])
+                    else:
+                        cc_flags.extend([
+                            '-march={}'.format(self.env['march']), LF,
+                        ])
+                if dirpath_relative_root_components_len > 0:
+                    if dirpath_relative_root_components[0] == 'userland':
+                        if dirpath_relative_root_components_len > 1:
+                            if dirpath_relative_root_components[1] == 'libs':
+                                if dirpath_relative_root_components_len > 1:
+                                    if self.env['gcc_which'] == 'host':
+                                        eigen_root = '/'
+                                    else:
+                                        eigen_root = self.env['buildroot_staging_dir']
+                                    packages = {
+                                        'eigen': {
+                                            # TODO: was failing with:
+                                            # fatal error: Eigen/Dense: No such file or directory as of
+                                            # 975ce0723ee3fa1fea1766e6683e2f3acb8558d6
+                                            # http://lists.busybox.net/pipermail/buildroot/2018-June/222914.html
+                                            'cc_flags': [
+                                                '-I',
+                                                os.path.join(
+                                                    eigen_root,
+                                                    'usr',
+                                                    'include',
+                                                    'eigen3'
+                                                ),
+                                                LF
+                                            ],
+                                            # Header only.
+                                            'cc_flags_after': [],
+                                        },
+                                    }
+                                    package_key = dirpath_relative_root_components[2]
+                                    if package_key in packages:
+                                        package = packages[package_key]
+                                    else:
+                                        package = {}
+                                    if 'cc_flags' in package:
+                                        cc_flags.extend(package['cc_flags'])
+                                    else:
+                                        pkg_config_output = self.sh.check_output([
+                                            self.env['pkg_config'],
+                                            '--cflags',
+                                            package_key
+                                        ]).decode()
+                                        cc_flags.extend(self.sh.shlex_split(pkg_config_output))
+                                    if 'cc_flags_after' in package:
+                                        cc_flags.extend(package['cc_flags_after'])
+                                    else:
+                                        pkg_config_output = subprocess.check_output([
+                                            self.env['pkg_config'],
+                                            '--libs',
+                                            package_key
+                                        ]).decode()
+                                        cc_flags_after.extend(self.sh.shlex_split(pkg_config_output))
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                ret = self.sh.run_cmd(
+                    (
+                        [
+                            cc, LF,
+                        ] +
+                        cc_flags +
+                        [
+                            '-std={}'.format(std), LF,
+                            '-o', out_path, LF,
+                            in_path, LF,
+                        ] +
+                        self.sh.add_newlines(extra_objs) +
+                        cc_flags_after
+                    ),
+                    extra_paths=[self.env['ccache_dir']],
+                )
+        return ret
 
     def clean(self):
         build_dir = self.get_build_dir()
@@ -1198,6 +1723,16 @@ class BuildCliFunction(LkmcCliFunction):
     def get_build_dir(self):
         return None
 
+    def need_rebuild(self, srcs, dst):
+        if self.env['force_rebuild']:
+            return True
+        if not os.path.exists(dst):
+            return True
+        for src in srcs:
+            if os.path.getmtime(src) > os.path.getmtime(dst):
+                return True
+        return False
+
     def timed_main(self):
         '''
         Parse CLI, and to the build based on it.
@@ -1209,26 +1744,36 @@ class BuildCliFunction(LkmcCliFunction):
         else:
             return self.build()
 
-# from aenum import Enum  # for the aenum version
-TestResult = enum.Enum('TestResult', ['PASS', 'FAIL'])
+TestStatus = enum.Enum('TestStatus', ['PASS', 'FAIL'])
 
-class Test:
+@functools.total_ordering
+class TestResult:
     def __init__(
         self,
-        test_id: str,
-        result : TestResult =None,
-        ellapsed_seconds : float =None
+        test_id: str ='',
+        status : TestStatus =TestStatus.PASS,
+        ellapsed_seconds : float =0,
+        reason : str =''
     ):
         self.test_id = test_id
-        self.result = result
+        self.status = status
         self.ellapsed_seconds = ellapsed_seconds
+        self.reason = reason
+
+    def __eq__(self, other):
+        return self.test_id == other.test_id
+
+    def __lt__(self, other):
+        return self.test_id < other.test_id
+
     def __str__(self):
-        out = []
-        if self.result is not None:
-            out.append(self.result.name)
-        if self.ellapsed_seconds is not None:
-            out.append(LkmcCliFunction.seconds_to_hms(self.ellapsed_seconds))
-        out.append(self.test_id)
+        out = [
+            self.status.name,
+            LkmcCliFunction.seconds_to_hms(self.ellapsed_seconds),
+            repr(self.test_id),
+        ]
+        if self.status is TestStatus.FAIL:
+            out.append(repr(self.reason))
         return ' '.join(out)
 
 class TestCliFunction(LkmcCliFunction):
@@ -1238,76 +1783,136 @@ class TestCliFunction(LkmcCliFunction):
     Automates test reporting boilerplate for those commands.
     '''
 
+    base_run_args = {
+        'background': True,
+        'ctrl_c_host': True,
+        'print_cmd_oneline': True,
+        'show_cmds': False,
+        'show_stdout': False,
+        'show_time': False,
+    }
+
     def __init__(self, *args, **kwargs):
         defaults = {
-            'print_time': False,
+            'quit_on_fail': False,
+            'show_time': False,
         }
         if 'defaults' in kwargs:
             defaults.update(kwargs['defaults'])
         kwargs['defaults'] = defaults
         super().__init__(*args, **kwargs)
-        self.tests = []
+        self.test_results = queue.Queue()
 
-    def run_test(self, run_obj, run_args=None, test_id=None):
+    def handle_output_function(
+        self,
+        work_function_input,
+        work_function_return,
+        work_function_exception
+    ):
+        if work_function_exception is not None:
+            return work_function_exception
+        if work_function_return.status != TestStatus.PASS:
+            return thread_pool.ThreadPoolExitException()
+
+    def run_test(
+        self,
+        run_obj,
+        run_args=None,
+        test_id=None,
+        expected_exit_status=None,
+        thread_id=0,
+    ):
         '''
         This is a setup / run / teardown setup for simple tests that just do a single run.
 
         More complex tests might need to run the steps separately, e.g. gdb tests
         must run multiple commands: one for the run and one GDB.
 
+        This function is meant to be called from threads. In particular,
+        those threads have to cross over archs: the original motivation is to parallelize
+        super slow gem5 boot tests. Therefore, we cannot use self.env['arch'] and selv.env['emulator']
+        in this function or callees!
+
+        Ideally, we should make this static and pass all arguments to the call... but lazy to refactor.
+        I have the feeling I will regret this one day down the line.
+
         :param run_obj: callable object
         :param run_args: arguments to be passed to the runnable object
         :param test_id: test identifier, to be added in addition to of arch and emulator ids
+        :param thread_id: which thread the test is running under
         '''
-        if run_obj.is_arch_supported(self.env['arch']):
-            if run_args is None:
-                run_args = {}
-            test_id_string = self.test_setup(test_id)
-            exit_status = run_obj(**run_args)
-            self.test_teardown(run_obj, exit_status, test_id_string)
+        if run_obj.is_arch_supported(run_args['archs'][0], run_args.get('mode', None)):
+            cur_run_args = {
+                'run_id': thread_id,
+            }
+            cur_run_args.update(self.base_run_args)
+            if run_args is not None:
+                cur_run_args.update(run_args)
+            test_id_string = self.test_setup(run_args, test_id)
+            exit_status = run_obj(**cur_run_args)
+            return self.test_teardown(
+                run_obj,
+                exit_status,
+                test_id_string,
+                expected_exit_status=expected_exit_status
+            )
 
-    def test_setup(self, test_id):
-        test_id_string = '{} {}'.format(self.env['emulator'], self.env['arch'])
-        if test_id is not None:
+    def test_setup(self, run_args, test_id):
+        test_id_string = '{} {}'.format(run_args['emulators'][0], run_args['archs'][0])
+        if test_id is not None and str(test_id) != '':
             test_id_string += ' {}'.format(test_id)
-        self.log_info('test_id {}'.format(test_id_string), flush=True)
+        self.log_info('Starting: {}'.format(repr(test_id_string)), flush=True)
         return test_id_string
 
-    def test_teardown(self, run_obj, exit_status, test_id_string):
+    def test_teardown(
+        self,
+        run_obj,
+        exit_status,
+        test_id_string,
+        expected_exit_status=None
+    ):
+        if expected_exit_status is None:
+            expected_exit_status = 0
+        reason = ''
         if not self.env['dry_run']:
-            if exit_status == 0:
-                test_result = TestResult.PASS
+            if exit_status == expected_exit_status:
+                test_status = TestStatus.PASS
             else:
-                test_result = TestResult.FAIL
-                if self.env['quit_on_fail']:
-                    self.log_error('Test failed')
-                    sys.exit(1)
-            self.log_info('test_result {}'.format(test_result.name))
+                test_status = TestStatus.FAIL
+                reason = 'wrong exit status, got {} expected {}'.format(
+                    exit_status,
+                    expected_exit_status
+                )
             ellapsed_seconds = run_obj.ellapsed_seconds
         else:
-            test_result = None
-            ellapsed_seconds = None
-        self.log_info()
-        self.tests.append(Test(test_id_string, test_result, ellapsed_seconds))
+            test_status = TestStatus.PASS
+            ellapsed_seconds = 0
+        test_result = TestResult(
+            test_id_string,
+            test_status,
+            ellapsed_seconds,
+            reason
+        )
+        self.log_info('Result: ' + str(test_result))
+        self.test_results.put(test_result)
+        return test_result
 
     def teardown(self):
         '''
         :return: 1 if any test failed, 0 otherwise
         '''
-        self.log_info('Test result summary')
+        self.log_info('\nTest result summary:')
         passes = []
         fails = []
-        for test in self.tests:
-            if test.result in (TestResult.PASS, None):
-                passes.append(test)
+        while not self.test_results.empty():
+            test = self.test_results.get()
+            if test.status in (TestStatus.PASS, None):
+                bisect.insort(passes, test)
             else:
-                fails.append(test)
-        if passes:
-            for test in passes:
-                self.log_info(test)
+                bisect.insort(fails, test)
+        for test in itertools.chain(passes, fails):
+            self.log_info(test)
         if fails:
-            for test in fails:
-                self.log_info(test)
             self.log_error('A test failed')
             return 1
         return 0

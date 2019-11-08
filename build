@@ -7,8 +7,13 @@ import cli_function
 import collections
 import common
 import copy
+import itertools
+import math
+import subprocess
 import shell_helpers
 from shell_helpers import LF
+
+import lkmc
 
 class _Component:
     '''
@@ -31,6 +36,7 @@ class _Component:
         submodules_shallow=None,
         python2_pkgs=None,
         python3_pkgs=None,
+        ruby_pkgs=None,
     ):
         self.build_callback = build_callback
         self.supported_archs = supported_archs
@@ -41,6 +47,7 @@ class _Component:
         self.submodules_shallow = submodules_shallow or set()
         self.python2_pkgs = python2_pkgs or set()
         self.python3_pkgs = python3_pkgs or set()
+        self.ruby_pkgs = ruby_pkgs or set()
 
     def build(self, arch):
         if (
@@ -49,7 +56,40 @@ class _Component:
         ):
             self.build_callback()
 
+submodule_extra_remotes = {
+    'binutils-gdb': {
+        'up': 'git://sourceware.org/git/binutils-gdb.git',
+    },
+    'buildroot': {
+        'up': 'https://gem5.googlesource.com/public/gem5',
+    },
+    'crosstool-ng': {
+        'up': 'https://github.com/crosstool-ng/crosstool-ng',
+    },
+    'gcc': {
+        'up': 'git://gcc.gnu.org/git/gcc.git',
+    },
+    'gem5': {
+        'up': 'https://gem5.googlesource.com/public/gem5',
+    },
+    'glibc': {
+        'up': 'git://sourceware.org/git/glibc.git',
+    },
+    'linux': {
+        # https://cirosantilli.com/linux-kernel-module-cheat#gem5-arm-linux-kernel-patches
+        'gem5-arm': 'https://gem5.googlesource.com/arm/linux',
+        'up': 'git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git',
+    },
+    'qemu': {
+        'up': 'https://git.qemu.org/git/qemu.git',
+    },
+    'xen': {
+        'up': 'git://xenbits.xen.org/xen.git',
+    },
+}
+
 class Main(common.LkmcCliFunction):
+
     def __init__(self):
         super().__init__(
             description='''\
@@ -62,7 +102,7 @@ It is currently not possible to configure individual components from the command
 when you build with this script. TODO.
 
 Without any args, build only what is necessary for:
-https://github.com/cirosantilli/linux-kernel-module-cheat#qemu-buildroot-setup
+https://cirosantilli.com/linux-kernel-module-cheat#qemu-buildroot-setup
 
 ....
 ./%(prog)s
@@ -107,10 +147,8 @@ so looping over all of them would waste time.
         )
         buildroot_component = _Component(
             self._build_file('build-buildroot'),
-            submodules = {
-                'buildroot',
-            },
             submodules_shallow = {
+                'buildroot',
                 'binutils-gdb',
                 'gcc',
                 'glibc',
@@ -164,9 +202,8 @@ so looping over all of them would waste time.
                 # Generate graphs of config.ini under m5out.
                 'pydot',
             },
-            'submodules': {'gem5'},
+            'submodules_shallow': {'gem5'},
         }
-
         self.name_to_component_map = {
             'all': _Component(dependencies=[
                 'qemu-gem5-buildroot',
@@ -227,10 +264,13 @@ so looping over all of them would waste time.
                     'python-dev',
                     'texinfo',
                 },
-                submodules={'crosstool-ng'},
+                submodules_shallow={'crosstool-ng'},
             ),
             'doc': _Component(
                 self._build_file('build-doc'),
+                ruby_pkgs={
+                    'asciidoctor',
+                },
             ),
             'gem5': _Component(
                 self._build_file('build-gem5'),
@@ -272,7 +312,7 @@ so looping over all of them would waste time.
             'm5': _Component(
                 self._build_file('build-m5'),
                 dependencies=['buildroot'],
-                submodules={'gem5'},
+                submodules_shallow={'gem5'},
             ),
             'overlay': _Component(dependencies=[
                 'copy-overlay',
@@ -284,7 +324,7 @@ so looping over all of them would waste time.
                 'overlay',
             ]),
             'parsec-benchmark': _Component(
-                submodules={'parsec-benchmark'},
+                submodules_shallow={'parsec-benchmark'},
                 dependencies=['buildroot'],
             ),
             'qemu': _Component(
@@ -306,29 +346,30 @@ so looping over all of them would waste time.
                 'gem5-buildroot',
             ]),
             'qemu-user': _Component(
-                self._build_file('build-qemu', user_mode=True),
+                self._build_file('build-qemu', mode='userland'),
                 apt_build_deps = {'qemu'},
                 apt_get_pkgs={'libsdl2-dev'},
                 submodules={'qemu'},
             ),
             'release': _Component(dependencies=[
+                'baremetal-qemu',
                 'qemu-buildroot',
                 'doc',
             ]),
             'test-gdb': _Component(dependencies=[
                     'all-baremetal',
+                    'userland',
                 ],
-                supported_archs=common.consts['crosstool_ng_supported_archs'],
             ),
-            'test-user-mode': _Component(dependencies=[
-                'test-user-mode-qemu',
-                'test-user-mode-gem5',
+            'test-executables-userland': _Component(dependencies=[
+                'test-executables-userland-qemu',
+                'test-executables-userland-gem5',
             ]),
-            'test-user-mode-qemu': _Component(dependencies=[
+            'test-executables-userland-qemu': _Component(dependencies=[
                 'user-mode-qemu',
                 'userland',
             ]),
-            'test-user-mode-gem5': _Component(dependencies=[
+            'test-executables-userland-gem5': _Component(dependencies=[
                 'gem5',
                 'userland-gem5',
             ]),
@@ -338,6 +379,14 @@ so looping over all of them would waste time.
             'userland': _Component(
                 self._build_file('build-userland'),
                 dependencies=['buildroot'],
+            ),
+            'userland-host': _Component(
+                self._build_file('build-userland-in-tree'),
+                apt_get_pkgs={
+                    'libdrm-dev',
+                    'libeigen3-dev',
+                    'libopenblas-dev',
+                },
             ),
             'userland-gem5': _Component(
                 self._build_file('build-userland', static=True, userland_build_id='static'),
@@ -351,7 +400,7 @@ so looping over all of them would waste time.
             default=True,
             help='''\
 Don't run any apt-get commands. To make it easier to use with other archs:
-https://github.com/cirosantilli/linux-kernel-module-cheat#supported-hosts
+https://cirosantilli.com/linux-kernel-module-cheat#supported-hosts
 '''
         )
         self.add_argument(
@@ -394,8 +443,8 @@ Which components to build. Default: qemu-buildroot
         def f():
             args = self.get_common_args()
             args.update(extra_args)
-            args['print_time'] = False
-            self.import_path_main(component_file)(**args)
+            args['show_time'] = False
+            lkmc.import_path.import_path_main(component_file)(**args)
         return f
 
     def timed_main(self):
@@ -423,6 +472,7 @@ Which components to build. Default: qemu-buildroot
                 'git',
                 'moreutils', # ts
                 'python3-pip',
+                'rr',
                 'tmux',
                 'vinagre',
                 'wget',
@@ -447,6 +497,7 @@ Which components to build. Default: qemu-buildroot
             python3_pkgs = {
                 'pexpect==4.6.0',
             }
+            ruby_pkgs = set()
             for component in selected_components:
                 apt_get_pkgs.update(component.apt_get_pkgs)
                 apt_build_deps.update(component.apt_build_deps)
@@ -454,6 +505,10 @@ Which components to build. Default: qemu-buildroot
                 submodules_shallow.update(component.submodules_shallow)
                 python2_pkgs.update(component.python2_pkgs)
                 python3_pkgs.update(component.python3_pkgs)
+                python3_pkgs.update(component.python3_pkgs)
+                ruby_pkgs.update(component.ruby_pkgs)
+            if ruby_pkgs:
+                apt_get_pkgs.add('ruby')
             if apt_get_pkgs or apt_build_deps:
                 if self.env['travis']:
                     interacive_pkgs = {
@@ -504,46 +559,91 @@ Which components to build. Default: qemu-buildroot
                     ['python3', '-m', 'pip', 'install', '--user', LF] +
                     self.sh.add_newlines(sorted(python3_pkgs))
                 )
-            git_cmd_common = ['git', 'submodule', 'update', '--init', '--recursive']
-            if submodules:
-                # == Other nice git options for when distros move to newer Git
+            if ruby_pkgs:
+                # The right thing to do would be to use RVM and avoid sudo,
+                # but we felt it was too much boilerplate for now.
                 #
-                # Currently not on Ubuntu 16.04:
-                #
-                # `--progress`: added on Git 2.10:
-                #
-                # * https://stackoverflow.com/questions/32944468/how-to-show-progress-for-submodule-fetching
-                # * https://stackoverflow.com/questions/4640020/progress-indicator-for-git-clone
-                #
-                # `--jobs"`: https://stackoverflow.com/questions/26957237/how-to-make-git-clone-faster-with-multiple-threads/52327638#52327638
-                self.sh.run_cmd(
-                    git_cmd_common + ['--', LF] +
-                    self.sh.add_newlines([os.path.join(common.consts['submodules_dir'], x) for x in sorted(submodules)])
+                # --user-install does work here, but we still need to add
+                # the binary to PATH which is a pain:
+                # https://stackoverflow.com/questions/31596273/install-gem-in-local-folder
+                self.sh.run_cmd(['sudo', 'gem', 'install', 'bundler', LF])
+                # No ones knows how to do this without sudo:
+                # https://stackoverflow.com/questions/16376995/bundler-cannot-install-any-gems-without-sudo/27677094
+                self.sh.run_cmd([
+                    'sudo', LF,
+                    'bundle', LF,
+                    'install', LF,
+                    '--gemfile', os.path.join(self.env['root_dir'], 'Gemfile'), LF,
+                ])
+            git_cmd_common = [
+                'git', LF,
+                'submodule', LF,
+                'update', LF,
+                '--init', LF,
+                '--recursive', LF,
+            ]
+            if self.env['dry_run']:
+                git_version_tuple = (math.inf, math.inf, math.inf)
+            else:
+                git_version_tuple = tuple(
+                    int(x) for x in self.sh.check_output(['git', '--version']) \
+                            .decode().split(' ')[-1].split('.')[:3]
                 )
+                if git_version_tuple >= (2, 9, 0):
+                    # https://stackoverflow.com/questions/26957237/how-to-make-git-clone-faster-with-multiple-threads/52327638#52327638
+                    git_cmd_common.extend(['--jobs', str(len(os.sched_getaffinity(0))), LF])
+                if git_version_tuple >= (2, 10, 0):
+                    # * https://stackoverflow.com/questions/32944468/how-to-show-progress-for-submodule-fetching
+                    # * https://stackoverflow.com/questions/4640020/progress-indicator-for-git-clone
+                    git_cmd_common.extend(['--progress', LF])
+            def submodule_ids_to_cmd(submodules):
+                return self.sh.add_newlines([os.path.join(common.consts['submodules_dir'], x) for x in sorted(submodules)])
+            if submodules:
+                self.sh.run_cmd(git_cmd_common + ['--', LF] + submodule_ids_to_cmd(submodules))
             if submodules_shallow:
-                # == Shallow cloning.
-                #
                 # TODO Ideally we should shallow clone --depth 1 all of them.
                 #
                 # However, most git servers out there are crap or craply configured
                 # and don't allow shallow cloning except for branches.
                 #
-                # So for now, let's shallow clone only the Linux kernel, which has by far
-                # the largest .git repo history, and full clone the others.
+                # So for now I'm keeping all mirrors in my GitHub.
+                # and always have a lkmc-* branch pointint to it.
                 #
-                # Then we will maintain a GitHub Linux kernel mirror / fork that always has a
-                # lkmc branch, and point to it, so that it will always succeed.
+                # However, QEMU has a bunch of submodules itself, and I'm not in the mood
+                # to mirror all of them...
                 #
                 # See also:
                 #
                 # * https://stackoverflow.com/questions/3489173/how-to-clone-git-repository-with-specific-revision-changeset
                 # * https://stackoverflow.com/questions/2144406/git-shallow-submodules/47374702#47374702
                 # * https://unix.stackexchange.com/questions/338578/why-is-the-git-clone-of-the-linux-kernel-source-code-much-larger-than-the-extrac
-                #
-                self.sh.run_cmd(
-                    git_cmd_common + ['--depth', '1', '--', LF] +
-                    self.sh.add_newlines([os.path.join(common.consts['submodules_dir'], x) for x in sorted(submodules_shallow)])
-                )
+                cmd = git_cmd_common.copy()
+                if git_version_tuple > (2, 7, 4):
+                    # Then there is a bug in Ubuntu 16.04 git 2.7.4 where --depth 1 fails...
+                    # OMG git submodules implementation sucks:
+                    # * https://stackoverflow.com/questions/2155887/git-submodule-head-reference-is-not-a-tree-error/25875273#25875273
+                    # * https://github.com/boostorg/boost/issues/245
+                    cmd.extend(['--depth', '1', LF])
+                else:
+                    self.log_warn('your git is too old for git submodule update --depth 1')
+                    self.log_warn('update to git 2.17 or newer and you will save clone time')
+                    self.log_warn('see: https://github.com/cirosantilli/linux-kernel-module-cheat/issues/44')
+                self.sh.run_cmd(cmd + ['--', LF] + submodule_ids_to_cmd(submodules_shallow))
+            for submodule_name in submodule_extra_remotes:
+                submodule = submodule_extra_remotes[submodule_name]
+                for remote_name in submodule:
+                    self.sh.run_cmd(
+                        [
+                            'git', LF,
+                            '-C', os.path.join(common.consts['submodules_dir'], submodule_name), LF,
+                            'remote', LF,
+                            'add', LF,
+                            remote_name, LF,
+                            submodule[remote_name], LF,
+                        ],
+                        # In case the remote already exists.
+                        raise_on_failure=False
+                    )
 
         # Do the build.
         for component in selected_components:

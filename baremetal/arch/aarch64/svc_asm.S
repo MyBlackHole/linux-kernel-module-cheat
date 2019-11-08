@@ -1,21 +1,22 @@
-/* https://github.com/cirosantilli/linux-kernel-module-cheat#svc */
+/* https://cirosantilli.com/linux-kernel-module-cheat#arm-svc-instruction */
 
 #include <lkmc.h>
 
 .global main
 main:
     /* Do the svc. */
-    svc 0
+    svc 0xABCD
 
     /* Confirm that svc was called and modified myvar. */
     ldr x0, myvar
     ldr x1, mynewvar
     cmp x0, x1
     beq 1f
-    bl lkmc_assert_fail
+    bl abort
 1:
 
     /* Go home. */
+    mov x0, 0
     ret
 
 LKMC_GLOBAL(lkmc_vector_trap_handler)

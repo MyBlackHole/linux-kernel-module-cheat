@@ -8,32 +8,48 @@ from shell_helpers import LF
 class Main(common.BuildCliFunction):
     def __init__(self):
         super().__init__(
+            defaults={
+                'mode': 'baremetal',
+            },
             description='''\
 Build crosstool-NG with Newlib for bare metal compilation
 ''',
-            supported_archs=common.consts['crosstool_ng_supported_archs']
         )
 
     def build(self):
         build_dir = self.get_build_dir()
-        defconfig_dest = os.path.join(self.env['crosstool_ng_util_dir'], 'defconfig')
-        os.makedirs(self.env['crosstool_ng_util_dir'], exist_ok=True)
+        defconfig_dest = os.path.join(self.env['crosstool_ng_source_copy_dir'], 'defconfig')
         os.makedirs(self.env['crosstool_ng_download_dir'], exist_ok=True)
 
         # Bootstrap out-ot-tree WONTFIX. I've tried.
         # https://github.com/crosstool-ng/crosstool-ng/issues/1021
-        os.chdir(self.env['crosstool_ng_source_dir'])
-        self.sh.run_cmd(
-            [os.path.join(self.env['crosstool_ng_source_dir'], 'bootstrap'), LF],
+        #
+        # Then out-of-tree ./ctng usage also started to fail in 1.24.0.
+        #
+        # So instead of fighting upstream, I'll just take the Buildroot approach
+        # to life and rsync the entire source tree into the build tree. Fun times.
+        self.sh.copy_dir_if_update(
+            self.env['crosstool_ng_source_dir'],
+            self.env['crosstool_ng_source_copy_dir'],
         )
-        os.chdir(self.env['crosstool_ng_util_dir'])
+        self.sh.run_cmd(
+            [os.path.join(self.env['crosstool_ng_source_copy_dir'], 'bootstrap'), LF],
+            cwd=self.env['crosstool_ng_source_copy_dir'],
+        )
         self.sh.run_cmd(
             [
-                os.path.join(self.env['crosstool_ng_source_dir'], 'configure'), LF,
+                # abspath here makes Ubuntu 16.04 fail with:
+                # configure: error: source directory already configured; run "make distclean" there first
+                # after another build has been done. Don't ask me why.
+                os.path.join(os.curdir, 'configure'), LF,
                 '--enable-local', LF,
             ],
+            cwd=self.env['crosstool_ng_source_copy_dir'],
         )
-        self.sh.run_cmd(['make', '-j', str(self.env['nproc']), LF])
+        self.sh.run_cmd(
+            ['make', '-j', str(self.env['nproc']), LF],
+            cwd=self.env['crosstool_ng_source_copy_dir'],
+        )
 
         # Build the toolchain.
         self.sh.cp(
@@ -53,6 +69,7 @@ Build crosstool-NG with Newlib for bare metal compilation
                 self.env['crosstool_ng_executable'], LF,
                 'defconfig', LF,
             ],
+            cwd=self.env['crosstool_ng_source_copy_dir'],
         )
         self.sh.rmrf(defconfig_dest)
         self.sh.run_cmd(
@@ -61,7 +78,8 @@ Build crosstool-NG with Newlib for bare metal compilation
                 'build', LF,
                 'CT_JOBS={}'.format(str(self.env['nproc'])), LF,
             ],
-            out_file=os.path.join(build_dir, 'lkmc.log'),
+            cwd=self.env['crosstool_ng_source_copy_dir'],
+            out_file=os.path.join(build_dir, self.env['repo_short_id'] + '.log'),
             delete_env=['LD_LIBRARY_PATH'],
             extra_paths=[self.env['ccache_dir']],
         )

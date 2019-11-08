@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 
-import imp
 import os
 import signal
 import subprocess
 import sys
 
-import common
 from shell_helpers import LF
+import common
+import lkmc.import_path
+import thread_pool
 
 class GdbTestcase:
     def __init__(
@@ -34,16 +35,15 @@ class GdbTestcase:
         self.child.setecho(False)
         self.child.waitnoecho()
         self.child.expect(self.prompt)
-        test = imp.load_source('test', test_script_path)
+        test = lkmc.import_path.import_path(test_script_path)
         exception = None
         try:
             test.test(self)
-        except AssertionError as e:
+        except Exception as e:
             exception = e
         self.child.sendcontrol('d')
         self.child.close()
-        if exception is not None:
-            raise exception
+        self.exception = exception
 
     def before(self):
         return self.child.before.rstrip()
@@ -83,48 +83,74 @@ class Main(common.LkmcCliFunction):
 Connect with GDB to an emulator to debug Linux itself
 ''')
         self.add_argument(
-            '--after', default='',
-            help='Pass extra arguments to GDB, to be appended after all other arguments'
+            '--after',
+            default='',
+            help='''Pass extra arguments to GDB, to be appended after all other arguments.'''
         )
         self.add_argument(
-            '--before', default='',
-            help='Pass extra arguments to GDB to be prepended before any of the arguments passed by this script'
+            '--before',
+            default='',
+            help='''Pass extra arguments to GDB to be prepended before any of the arguments passed by this script.'''
         )
         self.add_argument(
-            'break_at', nargs='?',
-            help='Extra options to append at the end of the emulator command line'
+            '--continue',
+            default=True,
+            help='''\
+Run `continue` in GDB after connecting.
+* https://cirosantilli.com/linux-kernel-module-cheat#gdb-step-debug-early-boot
+* https://cirosantilli.com/linux-kernel-module-cheat#freestanding-programs
+* https://cirosantilli.com/linux-kernel-module-cheat#baremetal-gdb-step-debug
+'''
         )
         self.add_argument(
-            '-k', '--kgdb', default=False,
+            '--gdbserver',
+            default=False,
+            help='''https://cirosantilli.com/linux-kernel-module-cheat#gdbserver'''
         )
         self.add_argument(
-            '-C', '--no-continue', default=False,
-            help="Don't run continue after connecting"
+            '--kgdb',
+            default=False,
+            help='''https://cirosantilli.com/linux-kernel-module-cheat#kgdb'''
         )
         self.add_argument(
-            '-X', '--no-lxsymbols', default=False,
+            '--lxsymbols',
+            default=True,
+            help='''\
+Use the Linux kernel lxsymbols GDB script.
+Only enabled by default when debugging the Linux kernel, not on userland or baremetal.
+* https://cirosantilli.com/linux-kernel-module-cheat#gdb-step-debug-kernel-module
+* https://cirosantilli.com/linux-kernel-module-cheat#bypass-lx-symbols
+'''
         )
         self.add_argument(
-            '--test', default=False,
+            '--sim',
+            default=False,
+            help='''\
+Use the built-in GDB CPU simulator.
+https://cirosantilli.com/linux-kernel-module-cheat#gdb-builtin-cpu-simulator
+'''
+        )
+        self.add_argument(
+            '--test',
+            default=False,
             help='''\
 Run an expect test case instead of interactive usage. For baremetal and userland,
 the script is a .py file next to the source code.
 '''
         )
         self.add_argument(
-            '--sim', default=False,
-            help='''Use the built-in GDB CPU simulator
-See: https://github.com/cirosantilli/linux-kernel-module-cheat#gdb-builtin-cpu-simulator
+            'break_at',
+            nargs='?',
+            help='''\
+If given, break at the given expression, e.g. `main`. You will be left there automatically
+by default due to --continue if this breakpoint is reached.
 '''
-        )
-        self.add_argument(
-            '-u', '--userland',
         )
 
     def timed_main(self):
         after = self.sh.shlex_split(self.env['after'])
         before = self.sh.shlex_split(self.env['before'])
-        no_continue = self.env['no_continue']
+        no_continue = not self.env['continue']
         if self.env['test']:
             no_continue = True
             before.extend([
@@ -144,16 +170,21 @@ See: https://github.com/cirosantilli/linux-kernel-module-cheat#gdb-builtin-cpu-s
             break_at = ['-ex', 'break {}'.format(self.env['break_at']), LF]
         else:
             break_at = []
-        linux_full_system = (self.env['baremetal'] is None and self.env['userland'] is None)
         if self.env['userland']:
-            image = self.resolve_userland(self.env['userland'])
+            image = self.env['image']
+            linux_full_system = False
+            if self.env['gdbserver']:
+                before.extend([
+                    '-ex', 'set sysroot {}'.format(self.env['buildroot_staging_dir']),
+                ])
         elif self.env['baremetal']:
             image = self.env['image']
-            test_script_path = os.path.splitext(self.env['source_path'])[0] + '.py'
+            linux_full_system = False
         else:
             image = self.env['vmlinux']
+            linux_full_system = True
         cmd = (
-            [self.get_toolchain_tool('gdb'), LF] +
+            [self.env['gdb_path'], LF] +
             before
         )
         if linux_full_system:
@@ -161,7 +192,9 @@ See: https://github.com/cirosantilli/linux-kernel-module-cheat#gdb-builtin-cpu-s
         if self.env['sim']:
             target = 'sim'
         else:
-            if self.env['kgdb']:
+            if self.env['gdbserver']:
+                port = self.env['qemu_hostfwd_generic_port']
+            elif self.env['kgdb']:
                 port = self.env['extra_serial_port']
             else:
                 port = self.env['gdb_port']
@@ -193,18 +226,24 @@ See: https://github.com/cirosantilli/linux-kernel-module-cheat#gdb-builtin-cpu-s
             # The lx-symbols commands gets loaded through the file vmlinux-gdb.py
             # which gets put on the kernel build root when python debugging scripts are enabled.
             cmd.extend(['-ex', 'continue', LF])
-            if not self.env['no_lxsymbols'] and linux_full_system:
+            if self.env['lxsymbols'] and linux_full_system:
                 cmd.extend(['-ex', 'lx-symbols {}'.format(self.env['kernel_modules_build_subdir']), LF])
         cmd.extend(after)
         if self.env['test']:
             self.sh.print_cmd(cmd)
             if not self.env['dry_run']:
-                GdbTestcase(
+                exception = GdbTestcase(
                     self.env['source_path'],
-                    test_script_path,
+                    os.path.splitext(self.env['source_path'])[0] + '.py',
                     self.sh.strip_newlines(cmd),
                     verbose=self.env['verbose'],
-                )
+                ).exception
+                if exception is None:
+                    exit_status = 0
+                else:
+                    exit_status = 1
+                    self.log_info(thread_pool.ThreadPool.exception_traceback_string(exception))
+                return exit_status
         else:
             # I would rather have cwd be out_rootfs_overlay_dir,
             # but then lx-symbols cannot fine the vmlinux and fails with:

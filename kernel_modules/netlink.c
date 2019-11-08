@@ -1,4 +1,4 @@
-/* https://github.com/cirosantilli/linux-kernel-module-cheat#netlink-sockets */
+/* https://cirosantilli.com/linux-kernel-module-cheat#netlink-sockets */
 
 #include <linux/delay.h> /* usleep_range */
 #include <linux/module.h>
@@ -6,7 +6,7 @@
 #include <linux/skbuff.h>
 #include <net/sock.h>
 
-#include "../include/netlink.h"
+#include <lkmc/netlink.h>
 
 struct sock *nl_sk = NULL;
 

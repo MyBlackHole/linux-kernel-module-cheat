@@ -1,1 +1,1 @@
-https://github.com/cirosantilli/linux-kernel-module-cheat#ansi-cpp
+https://cirosantilli.com/linux-kernel-module-cheat#cpp

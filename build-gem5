@@ -16,15 +16,6 @@ https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-buildr
 '''
         )
         self.add_argument(
-            '--regression-test',
-            action='append',
-            default=[],
-            help='''\
-Build and run the given gem5 regression test.
-https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-unit-tests
-'''
-        )
-        self.add_argument(
             '--unit-test',
             action='append',
             default=[],
@@ -60,11 +51,12 @@ https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-unit-t
                     'git', LF,
                     '-C', self.env['gem5_default_source_dir'], LF,
                     'worktree', 'add', LF,
-                    '-b', os.path.join('wt', self.env['gem5_build_id']), LF,
+                    '-b', os.path.join('wt', self.env['gem5_worktree']), LF,
                     self.env['gem5_source_dir'], LF,
                 ])
             else:
-                raise Exception('gem5 submodule not checked out')
+                if not self.env['dry_run']:
+                    raise Exception('gem5 submodule not checked out')
         if self.env['verbose']:
             verbose = ['--verbose', LF]
         else:
@@ -109,6 +101,7 @@ https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-unit-t
             # TODO cross_compile is ignored because the make does not use CC...
             self.sh.run_cmd(['make', '-C', bootloader64_dir, LF])
             self.sh.cp(os.path.join(bootloader64_dir, 'boot_emm.arm64'), binaries_dir)
+            self.sh.cp(os.path.join(bootloader64_dir, 'boot_emm_v2.arm64'), binaries_dir)
         term_source_dir = os.path.join(self.env['gem5_source_dir'], 'util/term')
         m5term_build = os.path.join(term_source_dir, 'm5term')
         self.sh.run_cmd(['make', '-C', term_source_dir, LF])
@@ -120,17 +113,6 @@ https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-unit-t
         self.sh.cp(m5term_build, self.env['gem5_m5term'])
         if self.env['unit_test']:
             targets = [self.get_gem5_target_path(self.env, test) for test in self.env['unit_test']]
-        elif self.env['regression_test']:
-            targets = [
-                os.path.join(
-                    self.env['gem5_executable_dir'],
-                    'tests',
-                    self.env['gem5_build_type'],
-                    test
-                )
-                for test
-                in self.env['regression_test']
-            ]
         elif self.env['unit_tests']:
             targets = [self.env['gem5_unit_test_target']]
         else:
@@ -153,6 +135,9 @@ https://github.com/cirosantilli/linux-kernel-module-cheat-regression#gem5-unit-t
                 ] +
                 gold_linker_cmd +
                 verbose +
+                [
+                    'SLICC_HTML=True', LF,
+                ] +
                 self.sh.add_newlines(targets) +
                 self.sh.add_newlines(self.env['extra_scons_args'])
             ),

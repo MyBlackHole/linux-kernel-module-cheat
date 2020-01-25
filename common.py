@@ -38,7 +38,7 @@ common = sys.modules[__name__]
 # Fixed parameters that don't depend on CLI arguments.
 consts = {}
 consts['repo_short_id'] = 'lkmc'
-consts['linux_kernel_version'] = '5.2.1'
+consts['linux_kernel_version'] = '5.4.3'
 # https://stackoverflow.com/questions/20010199/how-to-determine-if-a-process-runs-inside-lxc-docker
 consts['in_docker'] = os.path.exists('/.dockerenv')
 consts['root_dir'] = os.path.dirname(os.path.abspath(__file__))
@@ -151,6 +151,8 @@ consts['build_type_choices'] = [
     'debug'
 ]
 consts['build_type_default'] = 'opt'
+# Files whose basename start with this are gitignored.
+consts['tmp_prefix'] = 'tmp.'
 
 class ExitLoop(Exception):
     pass
@@ -216,14 +218,6 @@ CPU architecture to use. If given multiple times, run the action
 for each arch sequentially in that order. If one of them fails, stop running.
 Valid archs: {}
 '''.format(arches_string)
-        )
-        self.add_argument(
-            '--clang',
-            default=False,
-            help='''\
-Build with clang as much as possible. Set the build-id to clang by default unless
-one is given explicitly. Currently supported components: gem5.
-'''
         )
         self.add_argument(
             '--dry-run',
@@ -344,6 +338,13 @@ Default: {}
             help='gem5 build type, most often used for "debug" builds.'
         )
         self.add_argument(
+            '--gem5-clang',
+            default=False,
+            help='''\
+Build gem5 with clang and set the --gem5-build-id to 'clang' by default.
+'''
+        )
+        self.add_argument(
             '--gem5-source-dir',
             help='''\
 Use the given directory as the gem5 source tree. Ignore `--gem5-worktree`.
@@ -372,6 +373,14 @@ Use the given directory as the Linux build directory. Ignore --linux-build-id.
             help='''\
 Linux build ID. Allows you to keep multiple separate Linux builds.
 '''
+        )
+        self.add_argument(
+            '--linux-exec',
+            help='''\
+Use the given executable Linux kernel image. Ignored in userland and baremetal modes,
+Remember that different emulators may take different types of image, see:
+https://cirosantilli.com/linux-kernel-module-cheat#vmlinux-vs-bzimage-vs-zimage-vs-image
+''',
         )
         self.add_argument(
             '--linux-source-dir',
@@ -491,6 +500,39 @@ https://cirosantilli.com/linux-kernel-module-cheat#gem5-arm-platforms
 
         # Userland.
         self.add_argument(
+            '--copy-overlay',
+            default=True,
+            help='''\
+Copy userland build outputs to the overlay directory which will be put inside
+the image. If not given explicitly, this is disabled automatically when certain
+options are given, for example --static, since users don't usually want
+static executables to be placed in the final image, but rather only for
+user mode simulations in simulators that don't support dynamic linking like gem5.
+'''
+        )
+        self.add_argument(
+            '--host',
+            default=False,
+            help='''\
+Use the host toolchain and other dependencies to build exectuables for host execution.
+Automatically place the build output on a separate directory from non --host builds,
+e.g. by defaulting --userland-build-id host if that option has effect for the package.
+Make --copy-overlay default to False as the generated executables can't in general
+be run in the guest.
+''',
+        )
+        self.add_argument(
+            '--out-rootfs-overlay-dir-prefix',
+            default='',
+            help='''\
+Place the output files of userland build outputs inside the image within this
+additional prefix. This is mostly useful to place different versions of binaries
+with different build parameters inside image to compare them. See:
+* https://cirosantilli.com/linux-kernel-module-cheat#update-the-toolchain
+* https://cirosantilli.com/linux-kernel-module-cheat#out_rootfs_overlay_dir
+'''
+        )
+        self.add_argument(
             '--package',
             action='append',
             help='''\
@@ -511,7 +553,8 @@ are available.
             default=False,
             help='''\
 Build userland executables statically. Set --userland-build-id to 'static'
-if one was not given explicitly.
+if one was not given explicitly. See also:
+https://cirosantilli.com/linux-kernel-module-cheat#user-mode-static-executables
 ''',
         )
         self.add_argument(
@@ -673,13 +716,15 @@ Incompatible archs are skipped.
         if not env['_args_given']['userland_build_id']:
             if env['static']:
                 env['userland_build_id'] = 'static'
+            elif env['host']:
+                env['userland_build_id'] = 'host'
             else:
                 env['userland_build_id'] = env['default_build_id']
         if not env['_args_given']['gem5_build_id']:
-            if env['_args_given']['gem5_worktree']:
-                env['gem5_build_id'] = env['gem5_worktree']
-            elif env['_args_given']['clang']:
+            if env['_args_given']['gem5_clang']:
                 env['gem5_build_id'] = 'clang'
+            elif env['_args_given']['gem5_worktree']:
+                env['gem5_build_id'] = env['gem5_worktree']
             else:
                 env['gem5_build_id'] = consts['default_build_id']
         env['is_arm'] = False
@@ -932,6 +977,9 @@ Incompatible archs are skipped.
         else:
             env['userland_build_dir'] = join(env['out_dir'], 'userland', env['userland_build_id'], env['arch'])
         env['package'] = set(env['package'])
+        if not env['_args_given']['copy_overlay']:
+            if self.env['in_tree'] or self.env['static'] or self.env['host']:
+                env['copy_overlay'] = False
 
         # Kernel modules.
         env['kernel_modules_build_dir'] = join(env['kernel_modules_build_base_dir'], env['arch'])
@@ -987,7 +1035,7 @@ Incompatible archs are skipped.
         )
         if env['mode'] == 'baremetal':
             env['build_dir'] = env['baremetal_build_dir']
-        elif env['mode'] == 'userland':
+        else:
             env['build_dir'] = env['userland_build_dir']
 
         # Docker
@@ -1031,14 +1079,18 @@ Incompatible archs are skipped.
                     break
         else:
             if env['emulator'] == 'gem5':
-                env['image'] = env['vmlinux']
+                if not env['_args_given']['linux_exec']:
+                    env['image'] = env['vmlinux']
                 if env['ramfs']:
                     env['disk_image'] = env['gem5_fake_iso']
                 else:
                     env['disk_image'] = env['rootfs_raw_file']
             else:
-                env['image'] = env['linux_image']
+                if not env['_args_given']['linux_exec']:
+                    env['image'] = env['linux_image']
                 env['disk_image'] = env['qcow2_file']
+            if env['_args_given']['linux_exec']:
+                env['image'] = env['linux_exec']
 
         # Android
         if not env['_args_given']['android_base_dir']:
@@ -1058,12 +1110,20 @@ lunch aosp_{}-eng
         if not env['_args_given']['gcc_which']:
             if env['mode'] == 'baremetal':
                 env['gcc_which'] = 'crosstool-ng'
+            elif env['host']:
+                env['gcc_which'] = 'host'
         if env['gcc_which'] == 'buildroot':
             env['toolchain_prefix'] = os.path.join(
                 env['buildroot_host_bin_dir'],
                 env['buildroot_toolchain_prefix']
             )
             env['userland_library_dir'] = env['buildroot_target_dir']
+            env['userland_library_redirects'] = [
+                'lib',
+                'lib64',
+                os.path.join('usr', 'lib'),
+                os.path.join('usr', 'lib64')
+            ]
             env['pkg_config'] = env['buildroot_pkg_config']
         elif env['gcc_which'] == 'crosstool-ng':
             env['toolchain_prefix'] = os.path.join(
@@ -1084,6 +1144,7 @@ lunch aosp_{}-eng
             elif env['arch'] == 'aarch64':
                 env['userland_library_dir'] = '/usr/aarch64-linux-gnu/'
             env['pkg_config'] = 'pkg-config'
+            env['userland_library_redirects'] = ['lib']
         elif env['gcc_which'] == 'host-baremetal':
             if env['arch'] == 'arm':
                 env['toolchain_prefix'] = 'arm-none-eabi'
@@ -1095,6 +1156,7 @@ lunch aosp_{}-eng
             env['toolchain_prefix_dash'] = ''
         else:
             env['toolchain_prefix_dash'] = '{}-'.format(env['toolchain_prefix'])
+        env['gfortran_path'] = self.get_toolchain_tool('gfortran')
         env['gcc_path'] = self.get_toolchain_tool('gcc')
         env['gxx_path'] = self.get_toolchain_tool('g++')
         env['ld_path'] = self.get_toolchain_tool('ld')
@@ -1540,6 +1602,12 @@ Pass the given compiler flags to all languages (C, C++, Fortran, etc.)
 Force rebuild even if sources didn't change.
 ''',
             },
+            '--configure': {
+                'default': True,
+                "help": '''\
+Also run the configuration step during build.
+''',
+            },
             '--optimization-level': {
                 'default': '0',
                 'help': '''
@@ -1648,6 +1716,11 @@ https://cirosantilli.com/linux-kernel-module-cheat#gem5-debug-build
                                     else:
                                         eigen_root = self.env['buildroot_staging_dir']
                                     packages = {
+                                        'boost': {
+                                            # Header only, no pkg-config package.
+                                            'cc_flags': [],
+                                            'cc_flags_after': [],
+                                        },
                                         'eigen': {
                                             # TODO: was failing with:
                                             # fatal error: Eigen/Dense: No such file or directory as of
@@ -1916,3 +1989,36 @@ class TestCliFunction(LkmcCliFunction):
             self.log_error('A test failed')
             return 1
         return 0
+
+# IO format.
+
+class LkmcList(list):
+    '''
+    list with a lightweight serialization format for algorithm IO.
+    '''
+    def __init__(self, *args, **kwargs):
+        if 'oneline' in kwargs:
+            self.oneline = kwargs['oneline']
+            del kwargs['oneline']
+        else:
+            self.oneline = False
+        super().__init__(*args, **kwargs)
+    def __str__(self):
+        if self.oneline:
+            sep = ' '
+        else:
+            sep = '\n'
+        return sep.join([str(item) for item in self])
+
+class LkmcOrderedDict(collections.OrderedDict):
+    '''
+    dict with a lightweight serialization format for algorithm IO.
+    '''
+    def __str__(self):
+        out = []
+        for key in self:
+            out.extend([
+                str(key),
+                str(self[key]) + '\n',
+            ])
+        return '\n'.join(out)

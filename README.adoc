@@ -1,5 +1,5 @@
 = Linux Kernel Module Cheat
-:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.4.3, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>. Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 19.10 host.
 :idprefix:
 :idseparator: -
 :nofooter:
@@ -530,6 +530,50 @@ Read the following sections for further introductory material:
 * <<introduction-to-qemu>>
 * <<introduction-to-buildroot>>
 
+=== Dry run to get commands for your project
+
+One of the major features of this repository is that we try to support the `--dry-run` option really well for all scripts.
+
+This option, as the name suggests, outputs the external commands that would be run (or more precisely: equivalent commands), without actually running them.
+
+This allows you to just clone this repository and get full working commands to integrate into your project, without having to build or use this setup further!
+
+For example, we can obtain a QEMU run for the file link:userland/c/hello.c[] in <<user-mode-simulation>> by adding `--dry-run` to the normal command:
+
+....
+./run --dry-run --userland userland/c/hello.c
+....
+
+which as of LKMC a18f28e263c91362519ef550150b5c9d75fa3679 + 1 outputs:
+
+....
++ /path/to/linux-kernel-module-cheat/out/qemu/default/opt/x86_64-linux-user/qemu-x86_64 \
+  -L /path/to/linux-kernel-module-cheat/out/buildroot/build/default/x86_64/target \
+  -r 5.2.1 \
+  -seed 0 \
+  -trace enable=load_file,file=/path/to/linux-kernel-module-cheat/out/run/qemu/x86_64/0/trace.bin \
+  -cpu max \
+  /path/to/linux-kernel-module-cheat/out/userland/default/x86_64/c/hello.out \
+;
+....
+
+So observe that the command contains:
+
+* `+`: sign to differentiate it from program stdout, much like bash `-x` output. This is not a valid part of the generated Bash command however.
+* the actual command nicely, indented and with arguments broken one per line, but with continuing backslashes so you can just copy paste into a terminal
+* `;`: both a valid part of the Bash command, and a visual mark the end of the command
+
+For the specific case of running emulators such as QEMU, the last command is also automatically placed in a file for your convenience and later inspection:
+
+....
+cat "$(./getvar run_dir)/run.sh"
+....
+
+Furthermore, `--dry-run` also automatically specifies, in valid Bash shell syntax:
+
+* environment variables used to run the command with syntax `+ ENV_VAR_1=abc ENV_VAR_2=def ./some/command`
+* change in working directory with `+ cd /some/new/path && ./some/command`
+
 === gem5 Buildroot setup
 
 ==== About the gem5 Buildroot setup
@@ -566,6 +610,12 @@ If you haven't built Buildroot yet for <<qemu-buildroot-setup>>, you can build f
 If you have already built previously, don't be afraid: gem5 and QEMU use almost the same root filesystem and kernel, so `./build` will be fast.
 
 Remember that the gem5 boot is <<benchmark-linux-kernel-boot,considerably slower>> than QEMU since the simulation is more detailed.
+
+gem5 moves a bit slowly, and if your host compiler is very new, the build might be broken for it, e.g. this was the case for Ubuntu 19.10 with GCC 9 and gem5 62d75e7105fe172eb906d4f80f360ff8591d4178 from Dec 2019. You can work around that by https://askubuntu.com/questions/466651/how-do-i-use-the-latest-gcc-on-ubuntu/1163021#1163021[installing an older compiler] and using it with something like:
+
+....
+./build-gem5 -- CC=gcc-8 CXX=g++-8
+....
 
 To get a terminal, either open a new shell and run:
 
@@ -606,9 +656,10 @@ More gem5 information is present at: xref:gem5[xrefstyle=full]
 
 Good next steps are:
 
-* <<gem5-run-benchmark>>
-* <<m5out-directory>>
-* <<m5ops>>
+* <<gem5-run-benchmark>>: how to run a benchmark in gem5 full system, including how to boot Linux, checkpoint and restore to skip the boot on a fast CPU
+* <<m5out-directory>>: understand the output files that gem5 produces, which contain information about your run
+* <<m5ops>>: magic guest instructions used to control gem5
+* <<add-new-files-to-the-buildroot-image>>: how to add your own files to the image if you have a benchmark that we don't already support out of the box (also send a pull request!)
 
 [[docker]]
 === Docker host setup
@@ -877,7 +928,7 @@ It has however severe limitations:
 Still interested?
 
 ....
-./build-modules --gcc-which host --host
+./build-modules --host
 ....
 
 Compilation will likely fail for some modules because of kernel or toolchain differences that we can't control on the host.
@@ -885,7 +936,7 @@ Compilation will likely fail for some modules because of kernel or toolchain dif
 The best workaround is to compile just your modules with:
 
 ....
-./build-modules --gcc-which host --host -- hello hello2
+./build-modules --host -- hello hello2
 ....
 
 which is equivalent to:
@@ -963,7 +1014,7 @@ Notable userland content included / moving into this repository includes:
 * <<c>>
 * <<cpp>>
 * <<posix>>
-* https://github.com/cirosantilli/algorithm-cheat TODO will be good to move here for performance analysis <<gem5-run-benchmark,with gem5>>
+* <<algorithms>>
 
 ==== Userland setup getting started
 
@@ -1023,7 +1074,7 @@ cd userland/c
 ./test
 ....
 
-As mentioned at <<user-mode-tests>>, tests under link:userland/libs[] require certain optional libraries to be installed, and are not built or tested by default.
+As mentioned at <<userland-libs-directory>>, tests under link:userland/libs[] require certain optional libraries to be installed, and are not built or tested by default.
 
 You can install those libraries with:
 
@@ -1210,7 +1261,7 @@ For example, to run link:baremetal/arch/aarch64/dump_regs.c[] in QEMU do:
 
 And the terminal prints the values of certain system registers. This example prints registers that are only accessible from <<arm-exception-levels,EL1>> or higher, and thus could not be run in userland.
 
-In addition to the examples under link:baremetal/[],  several of the <<userland-content,userland examples>> can also be run in baremetal! This is largely due to the <<about-the-baremetal-setup,awesomeness of Newlib>>.
+In addition to the examples under link:baremetal/[], several of the <<userland-content,userland examples>> can also be run in baremetal! This is largely due to the <<about-the-baremetal-setup,awesomeness of Newlib>>.
 
 The examples that work include most <<c,C examples>> that don't rely on complicated syscalls such as threads, and almost all the <<userland-assembly>> examples.
 
@@ -1702,6 +1753,7 @@ so it is close to the failing `0xbf0000cc`.
 
 does not give any interesting hits at `cc`, no symbol was placed that far.
 
+[[gdb-module-init]]
 ==== GDB module_init
 
 TODO find a more convenient method. We have working methods, but they are not ideal.
@@ -1713,6 +1765,7 @@ Possibly asked at:
 * https://stackoverflow.com/questions/37059320/debug-a-kernel-module-being-loaded
 * https://stackoverflow.com/questions/11888412/debug-the-init-module-call-of-a-linux-kernel-module
 
+[[gdb-module-init-step-into-it]]
 ===== GDB module_init step into it
 
 This is the best method we've found so far.
@@ -1745,8 +1798,9 @@ For the next time, you can also put a breakpoint there directly:
 ./run-gdb init/main.c:833
 ....
 
-How we found this out: first we got <<gdb-module_init-calculate-entry-address>> working, and then we did a `bt`. AKA cheating :-)
+How we found this out: first we got <<gdb-module-init-calculate-entry-address>> working, and then we did a `bt`. AKA cheating :-)
 
+[[gdb-module-init-calculate-entry-address]]
 ===== GDB module_init calculate entry address
 
 This works, but is a bit annoying.
@@ -1803,6 +1857,7 @@ and on shell 2:
 
 GDB then breaks, and `lx-symbols` works.
 
+[[gdb-module-init-break-at-the-end-of-sys-init-module]]
 ===== GDB module_init break at the end of sys_init_module
 
 TODO not working. This could be potentially very convenient.
@@ -1841,10 +1896,11 @@ fin
 
 also fails to break!
 
-Finally, in despair we notice that <<pr_debug>> prints the kernel load address as explained at <<bypass-lx-symbols>>.
+Finally, in despair we notice that <<pr-debug>> prints the kernel load address as explained at <<bypass-lx-symbols>>.
 
 So, if we set a breakpoint just after that message is printed by searching where that happens on the Linux source code, we must be able to get the correct load address before `init_module` happens.
 
+[[gdb-module-init-add-trap-instruction]]
 ===== GDB module_init add trap instruction
 
 This is another possibility: we could modify the module source by adding a trap instruction of some kind.
@@ -1895,7 +1951,7 @@ add-symbol-file ../../../rootfs_overlay/x86_64/timer.ko 0xffffffffc0000000
 0xffffffffc0000000
 ....
 
-Alternatively, if the module panics before you can read `/proc/modules`, there is a <<pr_debug>> which shows the load address:
+Alternatively, if the module panics before you can read `/proc/modules`, there is a <<pr-debug>> which shows the load address:
 
 ....
 echo 8 > /proc/sys/kernel/printk
@@ -2194,7 +2250,7 @@ The implementation is described at: https://stackoverflow.com/questions/46415059
 
 === GDB step debug multicore userland
 
-For a more minimal baremetal multicore setup, see: xref:arm-multicore[xrefstyle=full].
+For a more minimal baremetal multicore setup, see: xref:arm-baremetal-multicore[xrefstyle=full].
 
 We can set and get which cores the Linux kernel allows a program to run on with `sched_getaffinity` and `sched_setaffinity`:
 
@@ -2750,6 +2806,7 @@ We also have one letter shorthand names for the architectures and `--arch` optio
 
 Known quirks of the supported architectures are documented in this section.
 
+[[x86-64]]
 === x86_64
 
 ==== ring0
@@ -2950,6 +3007,7 @@ Source: link:userland/linux/poweroff.c[]
 
 This also illustrates how to shutdown the computer from C: https://stackoverflow.com/questions/28812514/how-to-shutdown-linux-using-c-or-qt-without-call-to-system
 
+[[sleep-forever-out]]
 ==== sleep_forever.out
 
 I dare you to guess what this does:
@@ -2962,6 +3020,7 @@ Source: link:userland/posix/sleep_forever.c[]
 
 This executable is a convenient simple init that does not panic and sleeps instead.
 
+[[time-boot-out]]
 ==== time_boot.out
 
 Get a reasonable answer to "how long does boot take in guest time?":
@@ -3328,7 +3387,7 @@ Interestingly, using initramfs significantly slows down the gem5 boot, even thou
 
 The device tree is a Linux kernel defined data structure that serves to inform the kernel how the hardware is setup.
 
-<<platform_device>> contains a minimal runnable example of device tree manipulation.
+<<platform-device>> contains a minimal runnable example of device tree manipulation.
 
 Device trees serve to reduce the need for hardware vendors to patch the kernel: they just provide a device tree file instead, which is much simpler.
 
@@ -3492,7 +3551,7 @@ You can dump the DTB QEMU generated with:
 
 as mentioned at: https://lists.gnu.org/archive/html/qemu-discuss/2017-02/msg00051.html
 
-<<gem5-fs_biglittle>> 2a9573f5942b5416fb0570cf5cb6cdecba733392 can also generate its own DTB.
+<<gem5-fs-biglittle>> 2a9573f5942b5416fb0570cf5cb6cdecba733392 can also generate its own DTB.
 
 gem5 can generate DTBs on ARM with `--generate-dtb`. The generated DTB is placed in the <<m5out-directory>> named as `system.dtb`.
 
@@ -3678,10 +3737,10 @@ This script skips a manually configured list of tests, notably:
 
 * tests that depend on a full running kernel and cannot be run in user mode simulation, e.g. those that rely on kernel modules
 * tests that require user interaction
-* tests that take perceptible ammounts of time
+* tests that take perceptible amounts of time
 * known bugs we didn't have time to fix ;-)
 
-Tests under link:userland/libs/[] depend on certain libraries being available on the target, e.g. <<blas>> for link:userland/libs/openblas[]. They are not run by default, but can be enabled with `--package` and `--package-all`.
+Tests under link:userland/libs/[] are only run if `--package` or `--package-all` are given as described at <<userland-libs-directory>>.
 
 The gem5 tests require building statically with build id `static`, see also: xref:gem5-syscall-emulation-mode[xrefstyle=full]. TODO automate this better.
 
@@ -3713,7 +3772,7 @@ or:
 ....
 ./run \
   --arch aarch64 \
-  --userland "$(./getvar --arch aarch64 buildroot_target_dir)/bin/sh"  \
+  --userland "$(./getvar --arch aarch64 buildroot_target_dir)/bin/sh" \
   --userland-args='-c "uname -a && pwd"' \
 ;
 ....
@@ -3812,8 +3871,23 @@ We pass `-L` by default, so everything just works.
 
 However, in case something goes wrong, you can also try statically linked executables, since this mechanism tends to be a bit more stable, for example:
 
-* gem5 user mode currently only supports static executables as mentioned at: xref:gem5-syscall-emulation-mode[xrefstyle=full]
 * QEMU x86_64 guest on x86_64 host was failing with <<stack-smashing-detected>>, but we found a workaround
+* gem5 user only supported static executables in the past, as mentioned at: xref:gem5-syscall-emulation-mode[xrefstyle=full]
+
+Running statically linked executables sometimes makes things break:
+
+* <<user-mode-static-executables-with-dynamic-libraries>>
+* TODO understand why:
++
+....
+./run --static --userland userland/c/file_write_read.c
+....
++
+fails our assertion that the data was read back correctly:
++
+....
+Assertion `strcmp(data, output) == 0' faile
+....
 
 ==== User mode static executables with dynamic libraries
 
@@ -3833,30 +3907,76 @@ it fails with:
 ld: cannot find -lopenblas
 ....
 
-`g++` and pthreads also causes issues: https://stackoverflow.com/questions/35116327/when-g-static-link-pthread-cause-segmentation-fault-why
+[[cpp-static-and-pthreads]]
+===== C++ static and pthreads
 
-As a consequence, the following fails:
+`g++` and pthreads also causes issues:
+
+* https://stackoverflow.com/questions/35116327/when-g-static-link-pthread-cause-segmentation-fault-why
+* https://stackoverflow.com/questions/58848694/gcc-whole-archive-recipe-for-static-linking-to-pthread-stopped-working-in-rec
+
+As a consequence, the following just hangs as of LKMC ca0403849e03844a328029d70c08556155dc1cd0 + 1 the example link:userland/cpp/atomic/std_atomic.cpp[]:
 
 ....
-./run --userland userland/cpp/atomic.cpp --static
+./run --userland userland/cpp/atomic/std_atomic.cpp --static
 ....
 
-with error:
+And before that, it used to fail with other randomly different errors, e.g.:
 
 ....
-qemu-x86_64: /path/to/linux-kernel-module-cheat/submodules/qemu/accel/tcg/cpu-exec.c:700: cpu_exec: Assertion `!have_mmap_lock()' failed.                                                                                                                            
+qemu-x86_64: /path/to/linux-kernel-module-cheat/submodules/qemu/accel/tcg/cpu-exec.c:700: cpu_exec: Assertion `!have_mmap_lock()' failed.
 qemu-x86_64: /path/to/linux-kernel-module-cheat/submodules/qemu/accel/tcg/cpu-exec.c:700: cpu_exec: Assertion `!have_mmap_lock()' failed.
 ....
 
-and if we manually build and run natively on host it segfaults.
+And a native Ubuntu 18.04 AMD64 run with static compilation segfaults.
 
-If we hack the compilation command to do instead:
+The workaround:
 
 ....
 -pthread -Wl,--whole-archive -lpthread -Wl,--no-whole-archive
 ....
 
-then it works. We should automate that at some point.
+fixes some of the problems, but not all, so we are just skipping those tests for now.
+
+=== syscall emulation mode program stdin
+
+The following work on both QEMU and gem5 as of LKMC 99d6bc6bc19d4c7f62b172643be95d9c43c26145 + 1. Interactive input:
+
+....
+./run --userland userland/c/getchar.c
+....
+
+Source: link:userland/c/getchar.c[]
+
+A line of type should show:
+
+....
+enter a character:
+....
+
+and after pressing say `a` and Enter, we get:
+
+....
+you entered: a
+....
+
+Note however that due to <<qemu-user-mode-does-not-show-stdout-immediately>> we don't really see the initial `enter a character` line.
+
+Non-interactive input from a file by forwarding emulators stdin implicitly through our Python scripts:
+
+....
+printf a > f.tmp
+./run --userland userland/c/getchar.c < f.tmp
+....
+
+Input from a file by explicitly requesting our scripts to use it via the Python API:
+
+....
+printf a > f.tmp
+./run --emulator gem5 --userland userland/c/getchar.c --stdin-file f.tmp
+....
+
+This is especially useful when running tests that require stdin input.
 
 === gem5 syscall emulation mode
 
@@ -3866,24 +3986,12 @@ Less robust than QEMU's, but still usable:
 
 There are much more unimplemented syscalls in gem5 than in QEMU. Many of those are trivial to implement however.
 
-As of 185c2730cc78d5adda683d76c0e3b35e7cb534f0, dynamically linked executables only work on x86, and they can only use the host libraries, which is ugly:
-
-* https://stackoverflow.com/questions/50542222/how-to-run-a-dynamically-linked-executable-syscall-emulation-mode-se-py-in-gem5
-* https://www.mail-archive.com/gem5-users@gem5.org/msg15585.html
-
-If you try dynamically linked executables on ARM, they fail with:
-
-....
-fatal: Unable to open dynamic executable's interpreter.
-....
+Support for dynamic linking was added in November 2019: https://stackoverflow.com/questions/50542222/how-to-run-a-dynamically-linked-executable-syscall-emulation-mode-se-py-in-gem5/50696098#50696098
 
 So let's just play with some static ones:
 
 ....
-./build-userland \
-  --arch aarch64 \
-  --static \
-;
+./build-userland --arch aarch64
 ./run \
   --arch aarch64 \
   --emulator gem5 \
@@ -3901,14 +4009,12 @@ TODO: how to escape spaces on the command line arguments?
   --arch aarch64 \
   --emulator gem5 \
   --gdb-wait \
-  --static \
   --userland userland/c/command_line_arguments.c \
   --userland-args 'asdf "qw er"' \
 ;
 ./run-gdb \
   --arch aarch64 \
   --emulator gem5 \
-  --static \
   --userland userland/c/command_line_arguments.c \
   main \
 ;
@@ -3919,7 +4025,7 @@ TODO: how to escape spaces on the command line arguments?
 As of gem5 7fa4c946386e7207ad5859e8ade0bbfc14000d91, the crappy `se.py` script does not forward the exit status of syscall emulation mode, you can test it with:
 
 ....
-./run --dry-run --emulator gem5 --static --userland userland/c/false.c
+./run --dry-run --emulator gem5 --userland userland/c/false.c
 ....
 
 Source: link:userland/c/false.c[].
@@ -3942,87 +4048,6 @@ which we parse in link:run[] and then exit with the correct result ourselves...
 
 Related thread: https://stackoverflow.com/questions/56032347/is-there-a-way-to-identify-if-gem5-run-got-over-successfully
 
-==== gem5 syscall emulation mode program stdin
-
-gem5 shows its own stdout to terminal, and does not allow you to type stdin to programs.
-
-Instead, you must pass stdin non-interactively with the through a file with the `--se.py --input` option, e.g.:
-
-....
-printf a > f
-./run --emulator gem5 --userland userland/c/getchar.c --static -- --input f
-....
-
-leads to gem5 output:
-
-....
-enter a character: you entered: a
-....
-
-Source: link:userland/c/getchar.c[]
-
-==== User mode vs full system benchmark
-
-Let's see if user mode runs considerably faster than full system or not.
-
-First we build <<dhrystone>> manually statically since dynamic linking is broken in gem5 as explained at: xref:gem5-syscall-emulation-mode[xrefstyle=full].
-
-TODO: move this section to our new custom dhrystone setup: xref:dhrystone[xrefstyle=full].
-
-gem5 user mode:
-
-....
-./build-buildroot --arch arm --config 'BR2_PACKAGE_DHRYSTONE=y'
-make \
-  -B \
-  -C "$(./getvar --arch arm buildroot_build_build_dir)/dhrystone-2" \
-  CC="$(./run-toolchain --arch arm --print-tool gcc)" \
-  CFLAGS=-static \
-;
-time \
-  ./run \
-  --arch arm \
-  --emulator gem5 \
-  --userland "$(./getvar --arch arm buildroot_build_build_dir)/dhrystone-2/dhrystone" \
-  --userland-args 'asdf qwer' \
-;
-....
-
-gem5 full system:
-
-....
-time \
-  ./run \
-  --arch arm \
-  --eval-after './gem5.sh' \
-  --emulator gem5
-  --gem5-readfile 'dhrystone 100000' \
-;
-....
-
-QEMU user mode:
-
-....
-time qemu-arm "$(./getvar --arch arm buildroot_build_build_dir)/dhrystone-2/dhrystone" 100000000
-....
-
-QEMU full system:
-
-....
-time \
-  ./run \
-  --arch arm \
-  --eval-after 'time dhrystone 100000000;./linux/poweroff.out' \
-;
-....
-
-Result on <<p51>> at bad30f513c46c1b0995d3a10c0d9bc2a33dc4fa0:
-
-* gem5 user: 33 seconds
-* gem5 full system: 51 seconds
-* QEMU user: 45 seconds
-* QEMU full system: 223 seconds
-
 ==== gem5 syscall emulation mode syscall tracing
 
 Since gem5 has to implement syscalls itself in syscall emulation mode, it can of course clearly see which syscalls are being made, and we can log them for debug purposes with <<gem5-tracing>>, e.g.:
@@ -4030,8 +4055,7 @@ Since gem5 has to implement syscalls itself in syscall emulation mode, it can of
 ....
 ./run \
   --emulator gem5 \
-  --static userland/arch/x86_64/freestanding/linux/hello.S \
-  --userland  \
+  --userland userland/arch/x86_64/freestanding/linux/hello.S \
   --trace-stdout \
   --trace ExecAll,SyscallBase,SyscallVerbose \
 ;
@@ -4239,7 +4263,7 @@ This would have several advantages:
 ** overcomes the `check_bin_arch` problem as shown at: xref:rpath[xrefstyle=full]
 * we could keep the base root filesystem very small, which implies:
 ** less host disk usage, no need to copy the entire `./getvar out_rootfs_overlay_dir` to the image again
-** no need to worry about <<br2_target_rootfs_ext2_size>>
+** no need to worry about <<br2-target-rootfs-ext2-size>>
 
 We can already make host files appear on the guest with <<9p>>, but they appear on a subdirectory instead of the root.
 
@@ -4328,7 +4352,7 @@ and on another terminal:
 ./vnc
 ....
 
-but there is not terminal on the VNC window, just the <<config_logo>> penguin.
+but there is not terminal on the VNC window, just the <<config-logo>> penguin.
 
 ==== Quit QEMU from text mode
 
@@ -4355,7 +4379,7 @@ Enable graphic mode with:
 ./run --graphic
 ....
 
-Outcome: you see a penguin due to <<config_logo>>.
+Outcome: you see a penguin due to <<config-logo>>.
 
 For a more exciting GUI experience, see: xref:x11[xrefstyle=full]
 
@@ -4489,7 +4513,7 @@ and then on another shell:
 vinagre localhost:5900
 ....
 
-The <<config_logo>> penguin only appears after several seconds, together with kernel messages of type:
+The <<config-logo>> penguin only appears after several seconds, together with kernel messages of type:
 
 ....
 [    0.152755] [drm] found ARM HDLCD version r0p0
@@ -4676,7 +4700,7 @@ To x11 packages have an `xserver` prefix as in:
 
 the easiest way to find them out is to just list `"$(./getvar buildroot_build_build_dir)/x*`.
 
-TODO as of: c2696c978d6ca88e8b8599c92b1beeda80eb62b2 I noticed that `startx` leads to a <<bug_on>>:
+TODO as of: c2696c978d6ca88e8b8599c92b1beeda80eb62b2 I noticed that `startx` leads to a <<bug-on>>:
 
 ....
 [    2.809104] WARNING: CPU: 0 PID: 51 at drivers/gpu/drm/ttm/ttm_bo_vm.c:304 ttm_bo_vm_open+0x37/0x40
@@ -5576,7 +5600,7 @@ This format is selected by the following boot options:
 * `console_msg_format=syslog`: add the `<LEVEL>` part. Added in v4.16.
 * `printk.time=y`: add the `[TIMESTAMP]` part
 
-The debug highest level is a bit more magic, see: xref:pr_debug[xrefstyle=full] for more info.
+The debug highest level is a bit more magic, see: xref:pr-debug[xrefstyle=full] for more info.
 
 ==== /proc/sys/kernel/printk
 
@@ -5726,6 +5750,7 @@ early_param("debug", debug_kernel);
 early_param("quiet", quiet_kernel);
 ....
 
+[[ignore-loglevel]]
 ==== ignore_loglevel
 
 ....
@@ -5740,6 +5765,7 @@ enables all log levels, and is basically the same as:
 
 except that you don't need to know what is the maximum level.
 
+[[pr-debug]]
 ==== pr_debug
 
 https://stackoverflow.com/questions/28936199/why-is-pr-debug-of-the-linux-kernel-not-giving-any-output/49835405#49835405
@@ -5814,6 +5840,7 @@ Enable `pr_debug` for boot messages as well, before we can reach userland and wr
 
 Get ready for the noisiest boot ever, I think it overflows the `printk` buffer and funny things happen.
 
+[[pr-debug-is-different-from-printk-kern-debug]]
 ===== pr_debug != printk(KERN_DEBUG
 
 When `CONFIG_DYNAMIC_DEBUG` is set,  `printk(KERN_DEBUG` is not the exact same as `pr_debug(` since `printk(KERN_DEBUG` messages are visible with:
@@ -5968,7 +5995,7 @@ ffffffffc0002300 B lkmc_dep     [dep]
 
 This requires `CONFIG_KALLSYMS_ALL=y`.
 
-Dependency information is stored by the kernel module build system in the `.ko` files' <<module_info>>, e.g.:
+Dependency information is stored by the kernel module build system in the `.ko` files' <<module-info>>, e.g.:
 
 ....
 modinfo dep2.ko
@@ -5983,7 +6010,7 @@ depends:        dep
 We can double check with:
 
 ....
-strings 3 dep2.ko  | grep -E 'depends'
+strings 3 dep2.ko | grep -E 'depends'
 ....
 
 The output contains:
@@ -6062,6 +6089,7 @@ Bibliography:
 * https://askubuntu.com/questions/20070/whats-the-difference-between-insmod-and-modprobe
 * https://stackoverflow.com/questions/22891705/whats-the-difference-between-insmod-and-modprobe
 
+[[module-info]]
 ==== MODULE_INFO
 
 Module metadata is stored on module files at compile time. Some of the fields can be retrieved through the `THIS_MODULE` `struct module`:
@@ -6151,7 +6179,7 @@ Bibliography:
 
 ==== vermagic
 
-Vermagic is a magic string present in the kernel and on <<module_info>> of kernel modules. It is used to verify that the kernel module was compiled against a compatible kernel version and relevant configuration:
+Vermagic is a magic string present in the kernel and on <<module-info>> of kernel modules. It is used to verify that the kernel module was compiled against a compatible kernel version and relevant configuration:
 
 ....
 insmod vermagic.ko
@@ -6209,6 +6237,7 @@ TODO how to get the vermagic from running kernel from userland? https://lists.ke
 
 This option just strips `modversion` information from the module before loading, so it is not a kernel feature.
 
+[[init-module]]
 ==== init_module
 
 `init_module` and `cleanup_module` are an older alternative to the `module_init` and `module_exit` macros:
@@ -6398,6 +6427,7 @@ Related:
 * https://stackoverflow.com/questions/6151538/addr2line-on-kernel-module
 * https://stackoverflow.com/questions/13468286/how-to-read-understand-analyze-and-debug-a-linux-kernel-panic
 
+[[bug-on]]
 ===== BUG_ON
 
 Basically just calls `panic("BUG!")` for most archs.
@@ -6593,9 +6623,10 @@ Line 7 of "/root/linux-kernel-module-cheat/out/kernel_modules/x86_64/kernel_modu
 
 This-did not work on `arm` due to <<gdb-step-debug-kernel-module-arm>> so we need to either:
 
-* <<gdb-module_init>>
+* <<gdb-module-init>>
 * <<kernel-module-stack-trace-to-source-line>> post-mortem method
 
+[[dump-stack]]
 ==== dump_stack
 
 The `dump_stack` function produces a stack trace much like panic and oops, but causes no problems and we return to the normal control flow, and can cleanly remove the module afterwards:
@@ -6606,9 +6637,10 @@ insmod dump_stack.ko
 
 Source: link:kernel_modules/dump_stack.c[]
 
+[[warn-on]]
 ==== WARN_ON
 
-The `WARN_ON` macro basically just calls <<dump_stack,dump_stack>>.
+The `WARN_ON` macro basically just calls <<dump-stack>>.
 
 One extra side effect is that we can make it also panic with:
 
@@ -6620,6 +6652,29 @@ insmod warn_on.ko
 Source: link:kernel_modules/warn_on.c[]
 
 Can also be activated with the `panic_on_warn` boot parameter.
+
+[[not-syncing]]
+==== not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+
+Let's learn how to diagnose problems with the root filesystem not being found. TODO add a sample panic error message for each error type:
+
+* https://askubuntu.com/questions/41930/kernel-panic-not-syncing-vfs-unable-to-mount-root-fs-on-unknown-block0-0/1048477#1048477
+
+This is the diagnosis procedure:
+
+* does the filesystem appear on the list of filesystems? If not, then likely you are missing either:
+** the driver for that hardware type, e.g. hard drive / SSD type. Here, Linux does not know how to communicate with a given hardware to get bytes from it at all. In simiulation, the most important often missing one is virtio which needs:
++
+....
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BLK=y
+....
+** the driver for that filesystem type. Here, Linux can read bytes from the hardware, but cannot interpret them as a tree of files because it does not recognize the file system format. For example, to boot from <<squashfs>> we would need:
++
+....
+CONFIG_SQUASHFS=y
+....
+* your filesystem of interest appears in the list, then you just need to set the `root` <<kernel-command-line-parameters,command line parameter>> to point to that, e.g. `root=/dev/sda`
 
 === Pseudo filesystems
 
@@ -6711,7 +6766,7 @@ Where the data comes from and how to modify it:
 In this repo, leaking host information, and to make builds more reproducible, we are setting:
 
 - user and date to dummy values with `KBUILD_BUILD_USER` and `KBUILD_BUILD_TIMESTAMP`
-- hostname to the kernel git commit with `KBUILD_BUILD_HOST` and  `KBUILD_BUILD_VERSION`
+- hostname to the kernel git commit with `KBUILD_BUILD_HOST` and `KBUILD_BUILD_VERSION`
 
 A sample result is:
 
@@ -6747,7 +6802,7 @@ Vs procfs:
 
 You basically can only do `open`, `close`, `read`, `write`, and `lseek` on sysfs files.
 
-It is similar to a <<seq_file>> file operation, except that write is also implemented.
+It is similar to a <<seq-file>> file operation, except that write is also implemented.
 
 TODO: what are those `kobject` structs? Make a more complex example that shows what they can do.
 
@@ -6870,6 +6925,7 @@ We have put printks on each fop, so this allows you to see which system calls ar
 
 No, there no official documentation: https://stackoverflow.com/questions/15213932/what-are-the-struct-file-operations-arguments
 
+[[seq-file]]
 ==== seq_file
 
 Writing trivial read <<file-operations>> is repetitive and error prone. The `seq_file` API makes the process much easier for those trivial cases:
@@ -6907,9 +6963,10 @@ Bibliography:
 * https://github.com/torvalds/linux/blob/v4.17/Documentation/filesystems/seq_file.txt[Documentation/filesystems/seq_file.txt]
 * https://stackoverflow.com/questions/25399112/how-to-use-a-seq-file-in-linux-modules
 
+[[seq-file-single-open]]
 ===== seq_file single_open
 
-If you have the entire read output upfront, `single_open` is an even more convenient version of <<seq_file>>:
+If you have the entire read output upfront, `single_open` is an even more convenient version of <<seq-file>>:
 
 ....
 ./seq_file.sh
@@ -7454,7 +7511,7 @@ However, this module is intended to fire only once as can be seen from its sourc
 
 and furthermore interrupt `1` and `12` happen immediately TODO why, were they somehow pending?
 
-So so see something interesting, you need to monitor an interrupt that is more rare than the keyboard, e.g. <<platform_device>>.
+So so see something interesting, you need to monitor an interrupt that is more rare than the keyboard, e.g. <<platform-device>>.
 
 ==== /proc/interrupts
 
@@ -7501,6 +7558,7 @@ Sources:
 
 Bibliography: https://stackoverflow.com/questions/6139493/how-convert-char-to-int-in-linux-kernel/49811658#49811658
 
+[[virt-to-phys]]
 ==== virt_to_phys
 
 Convert a virtual address to physical:
@@ -7680,6 +7738,7 @@ which we set by default.
 
 Bibliography: https://stackoverflow.com/questions/11891979/how-to-access-mmaped-dev-mem-without-crashing-the-linux-kernel
 
+[[pagemap-dump-out]]
 ====== pagemap_dump.out
 
 Dump the physical address of all pages mapped to a given process using `/proc/<pid>/maps` and `/proc/<pid>/pagemap`.
@@ -7786,6 +7845,7 @@ Good overviews:
 
 I hope to have examples of all methods some day, since I'm obsessed with visibility.
 
+[[config-proc-events]]
 ==== CONFIG_PROC_EVENTS
 
 Logs proc events such as process creation to a link:kernel_modules/netlink.c[netlink socket].
@@ -7828,6 +7888,7 @@ TODO can you get process data such as UID and process arguments? It seems not si
 * https://unix.stackexchange.com/questions/163681/print-pids-and-names-of-processes-as-they-are-created/163689 requests process name
 * https://serverfault.com/questions/199654/does-anyone-know-a-simple-way-to-monitor-root-process-spawn requests UID
 
+[[config-proc-events-aarch64]]
 ===== CONFIG_PROC_EVENTS aarch64
 
 0111ca406bdfa6fd65a2605d353583b4c4051781 was failing with:
@@ -8157,6 +8218,7 @@ I have observed a single match for that instruction, so it must be the init, and
 
 Make it harder to get hacked and easier to notice that you were, at the cost of some (small?) runtime overhead.
 
+[[config-fortify-source]]
 ==== CONFIG_FORTIFY_SOURCE
 
 Detects buffer overflows for us:
@@ -8779,6 +8841,7 @@ Instead, the shell appears on `/dev/tty7`.
 * `-e 'console=ttyS0'` much like `tty2`, but messages show only on serial, and the terminal is broken due to having multiple shells on it
 * `-e 'console=tty1 console=ttyS0'`: boot messages show on both `tty1` and `ttyS0`, but only `S0` gets a shell because it came last
 
+[[config-logo]]
 ==== CONFIG_LOGO
 
 If you run in <<graphics>>, then you get a Penguin image for <<number-of-cores,every core>> above the console! https://askubuntu.com/questions/80938/is-it-possible-to-get-the-tux-logo-on-the-text-based-boot
@@ -9025,6 +9088,46 @@ We are trying to maintain a description of each at: https://unix.stackexchange.c
 QEMU does not seem able to boot ELF files like `vmlinux`: https://superuser.com/questions/1376944/can-qemu-boot-linux-from-vmlinux-instead-of-bzimage
 
 Converting `arch/*` images to `vmlinux` is possible in theory x86 with https://github.com/torvalds/linux/blob/v5.1/scripts/extract-vmlinux[`extract-vmlinux`] but we didn't get any gem5 boots working from images generated like that for some reason, see: https://github.com/cirosantilli/linux-kernel-module-cheat/issues/79
+
+=== Kernel modules
+
+[[dump-regs]]
+==== dump_regs
+
+The following kernel modules and <<baremetal>> executables dump and disassemble various registers which cannot be observed from userland (usually "system registers", "control registers"):
+
+* link:kernel_modules/dump_regs.c[]
+* link:baremetal/arch/aarch64/dump_regs.c[]
+* link:baremetal/arch/arm/dump_regs.c[]
+
+Some of those programs are using:
+
+* link:lkmc/aarch64_dump_regs.h[]
+
+Alternatively, you can also get their value from inside <<gdb>> with:
+
+....
+info registers all
+....
+
+or the short version:
+
+....
+i r a
+....
+
+or to get just specific registers, e.g. just ARMv8's SCTLR:
+
+....
+i r SCTLR
+....
+
+but it is sometimes just more convenient to run an executable to get the registers at the point of interest.
+
+See also:
+
+* https://stackoverflow.com/questions/5429137/how-to-print-register-values-in-gdb/31340294#31340294
+* https://stackoverflow.com/questions/24169614/how-to-show-all-x86-control-registers-when-debugging-the-linux-kernel-in-gdb-thr/59311764#59311764
 
 == Xen
 
@@ -9294,13 +9397,14 @@ For the more complex interfaces, we focus on simplified educational devices, eit
 * present in the QEMU upstream:
 ** <<qemu-edu>>
 * added in https://github.com/cirosantilli/qemu[our fork of QEMU]:
-** <<pci_min>>
-** <<platform_device>>
+** <<pci-min>>
+** <<platform-device>>
 
 ==== PCI
 
 Only tested in x86.
 
+[[pci-min]]
 ===== pci_min
 
 PCI driver for our minimal `pci_min.c` QEMU fork device:
@@ -9467,7 +9571,7 @@ Then you can try messing with that address with <<dev-mem>>:
 devmem 0xfeb54000 w 0x12345678
 ....
 
-which writes to the first register of our <<pci_min>> device.
+which writes to the first register of our <<pci-min>> device.
 
 The device then fires an interrupt at irq 11, which is unhandled, which leads the kernel to say you are a bad boy:
 
@@ -9486,7 +9590,7 @@ insmod irq.ko
 devmem 0xfeb54000 w 0x12345678
 ....
 
-Our kernel module handles the interrupt, but does not acknowledge it like our proper <<pci_min>> kernel module, and so it keeps firing, which leads to infinitely many messages being printed:
+Our kernel module handles the interrupt, but does not acknowledge it like our proper <<pci-min>> kernel module, and so it keeps firing, which leads to infinitely many messages being printed:
 
 ....
 handler irq = 11 dev = 251
@@ -9614,7 +9718,7 @@ Buildroot's Linux tools package provides some GPIO CLI tools: `lsgpio`, `gpio-ev
 
 ==== LEDs
 
-TODO: broken when `arm`  moved to `-M virt`, same as <<gpio>>.
+TODO: broken when `arm` moved to `-M virt`, same as <<gpio>>.
 
 Hack QEMU's `hw/misc/arm_sysctl.c` with a printf:
 
@@ -9657,6 +9761,7 @@ Relevant kernel files:
 * `drivers/leds/led-class.c`
 * `drivers/leds/leds-sysctl.c`
 
+[[platform-device]]
 ==== platform_device
 
 Minimal platform device example coded into the `-M versatilepb` SoC of our QEMU fork.
@@ -9824,6 +9929,15 @@ Or for a faster development loop:
 ./run --debug-vm-args '-ex "break qemu_add_opts" -ex "run"'
 ....
 
+Or if things get really involved and you want a debug script:
+
+....
+printf 'break qemu_add_opts
+run
+' > data/vm.gdb
+./run --debug-vm-file data/vm.gdb
+....
+
 Our default emulator builds are optimized with `gcc -O2 -g`. To use `-O0` instead, build and run with:
 
 ....
@@ -9835,9 +9949,11 @@ Our default emulator builds are optimized with `gcc -O2 -g`. To use `-O0` instea
 
 The `--verbose` is optional, but shows clearly each GCC build command so that you can confirm what `--*-build-type` is doing.
 
-The build outputs are automatically stored in a different directories for optimized and debug builds, which prevents `debug` files from overwriting `opt` ones. Therefore, `--gem5-build-id` is not required: 
+The build outputs are automatically stored in a different directories for optimized and debug builds, which prevents `debug` files from overwriting `opt` ones. Therefore, `--gem5-build-id` is not required.
 
-The price to pay for debuggability is high however: a Linux kernel boot was about 3x slower in QEMU and 14 times slower in gem5 debug compared to opt, see benchmarks at: xref:benchmark-linux-kernel-boot[xrefstyle=full]
+The price to pay for debuggability is high however: a Linux kernel boot was about 3x slower in QEMU and 14 times slower in gem5 debug compared to opt, see benchmarks at: xref:benchmark-linux-kernel-boot[xrefstyle=full].
+
+Similar slowdowns can be observed at: xref:benchmark-emulators-on-userland-executables[xrefstyle=full].
 
 When in <<qemu-text-mode>>, using `--debug-vm` makes Ctrl-C not get passed to the QEMU guest anymore: it is instead captured by GDB itself, so allow breaking. So e.g. you won't be able to easily quit from a guest program like:
 
@@ -9851,11 +9967,11 @@ You can still send key presses to QEMU however even without the mouse capture, j
 
 ==== Reverse debug the emulator
 
-While step debugging any complext program, you always end up feeling the need to step in reverse to reach the last call to some function that was called before the failure point, in order to trace back the problem to the actual bug source.
+While step debugging any complex program, you always end up feeling the need to step in reverse to reach the last call to some function that was called before the failure point, in order to trace back the problem to the actual bug source.
 
 While GDB "has" this feature, it is just too broken to be usable, and so we expose the amazing Mozilla RR tool conveniently in this repo: https://stackoverflow.com/questions/1470434/how-does-reverse-debugging-work/53063242#53063242
 
-Before the first usage:
+Before the first usage setup rr with:
 
 ....
 echo 'kernel.perf_event_paranoid=1' | sudo tee -a /etc/sysctl.conf
@@ -9868,7 +9984,10 @@ Then use it with your content of interest, for example:
 ./run --debug-vm-rr --userland userland/c/hello.c
 ....
 
-This will first run the program once until completion, and then restart the program at the very first instruction at `_start` and leave you in a GDB shell.
+This will:
+
+* first run the program once until completion or crash
+* then restart the program at the very first instruction at `_start` and leave you in a GDB shell
 
 From there, run the program until your point of interest, e.g.:
 
@@ -9877,12 +9996,18 @@ break qemu_add_opts
 continue
 ....
 
-and you can now reiably use reverse debugging commands such as `reverse-continue`, `reverse-finish` and `reverse-next`!
+and you can now reliably use reverse debugging commands such as `reverse-continue`, `reverse-finish` and `reverse-next`!
 
-To restart debugging again after quitting `rr`, simlpy run on your host terminal:
+To restart debugging again after quitting `rr`, simply run on your host terminal:
 
 ....
 rr replay
+....
+
+The use case of `rr` is often to go to the final crash and then walk back from there, so you often want to automate running until the end after record with `--debug-vm-args` as in:
+
+....
+./run --debug-vm-args='-ex continue' --debug-vm-rr --userland userland/c/hello.c
 ....
 
 Programs often tend to blow up in very low frames that use values passed in from higher frames. In those cases, remember that just like with forward debugging, you can't just go:
@@ -10202,6 +10327,10 @@ TODO: is there any way to distinguish which instruction runs on each core? Doing
 
 just appears to output both cores intertwined without any clear differentiation.
 
+==== QEMU get guest instruction count
+
+TODO: https://stackoverflow.com/questions/58766571/how-to-count-the-number-of-guest-instructions-qemu-executed-from-the-beginning-t
+
 ==== gem5 tracing
 
 gem5 provides also provides a tracing mechanism documented at: http://www.gem5.org/Trace_Based_Debugging[]:
@@ -10329,10 +10458,10 @@ There are two types of lines:
 Breakdown:
 
 * `25007500`: time count in some unit. Note how the microops execute at further timestamps.
-* `system.cpu`: distinguishes between CPUs when there are more than one. For example, running xref:arm-multicore[xrefstyle=full] with two cores produces `system.cpu0` and `system.cpu1`
+* `system.cpu`: distinguishes between CPUs when there are more than one. For example, running xref:arm-baremetal-multicore[xrefstyle=full] with two cores produces `system.cpu0` and `system.cpu1`
 * `T0`: thread number. TODO: https://superuser.com/questions/133082/hyper-threading-and-dual-core-whats-the-difference/995858#995858[hyperthread]? How to play with it?
 +
-`config`.ini has `--param 'system.multi_thread = True' --param 'system.cpu[0].numThreads = 2'`, but in <<arm-multicore>> the first one alone does not produce `T1`, and with the second one simulation blows up with:
+`config`.ini has `--param 'system.multi_thread = True' --param 'system.cpu[0].numThreads = 2'`, but in <<arm-baremetal-multicore>> the first one alone does not produce `T1`, and with the second one simulation blows up with:
 +
 ....
 fatal: fatal condition interrupts.size() != numThreads occurred: CPU system.cpu has 1 interrupt controllers, but is expecting one per thread (2)
@@ -10613,6 +10742,11 @@ Now you can play a fun little game with your friends:
 * make a program that solves the computation problem, and outputs output to stdout
 * write the code that runs the correct computation in the smallest number of cycles possible
 
+Interesting algorithms and benchmarks for this game are being collected at:
+
+* <<algorithms>>
+* <<benchmarks>>
+
 To find out why your program is slow, a good first step is to have a look at the <<gem5-m5out-stats-txt-file>>.
 
 ==== Skip extra benchmark instructions
@@ -10650,13 +10784,24 @@ cat /proc/cpuinfo
 getconf _NPROCESSORS_CONF
 ....
 
+Or from <<user-mode-simulation>>, we can use <<sysconf>> with link:userland/linux/sysconf.c[] or <<cpp-multithreading>>'s link:userland/cpp/thread_hardware_concurrency.cpp[]:
+
+....
+./run --cpus 2 --emulator gem5 --userland userland/linux/sysconf.c | grep _SC_NPROCESSORS_ONLN
+./run --cpus 2 --emulator gem5 --userland userland/cpp/thread_hardware_concurrency.cpp
+....
+
 ====== QEMU user mode multithreading
 
-TODO why in <<user-mode-simulation>> QEMU always shows the number of cores of the host. E.g., both of the following output the same as `nproc` on the host:
+<<user-mode-simulation>> QEMU v4.0.0 always shows the number of cores of the host, presumably because the thread switching uses host threads directly which would make that harder to implement.
+
+It does not seem possible to make the guest see a different number of cores than what the host has. Full system does have the `-smp` options, which controls this.
+
+E.g., all of of the following output the same as `nproc` on the host:
 
 ....
 nproc
-./run --userland userland/cpp/thread_hardware_concurrency.cpp
+./run --cpus 1 --userland userland/cpp/thread_hardware_concurrency.cpp
 ./run --cpus 2 --userland userland/cpp/thread_hardware_concurrency.cpp
 ....
 
@@ -10671,7 +10816,7 @@ ps Haux | grep qemu | wc
 
 Remember <<qemu-user-mode-does-not-show-stdout-immediately>> though.
 
-At 369a47fc6e5c2f4a7f911c1c058b6088f8824463 + 1 QEMU appears to spawn 3 host threads plus one for every new guest thread created.  Remember that link:userland/posix/pthread_count.c[] spawns N + 1 total threads if you count the `main` thread.
+At 369a47fc6e5c2f4a7f911c1c058b6088f8824463 + 1 QEMU appears to spawn 3 host threads plus one for every new guest thread created. Remember that link:userland/posix/pthread_count.c[] spawns N + 1 total threads if you count the `main` thread.
 
 ====== gem5 syscall emulation multithreading
 
@@ -10680,7 +10825,7 @@ gem5 user mode multithreading has been particularly flaky compared <<qemu-user-m
 You have the limitation that you must have at least one core per guest thread, otherwise `pthread_create` fails. For example:
 
 ....
-./run --cpus 1 --emulator gem5 --static --userland userland/posix/pthread_self.c --userland-args 1
+./run --cpus 1 --emulator gem5 --userland userland/posix/pthread_self.c --userland-args 1
 ....
 
 fails because that process has a total of 2 threads: one for `main` and one extra thread spawned: link:userland/posix/pthread_self.c[] The error message is:
@@ -10692,7 +10837,7 @@ pthread_create: Resource temporarily unavailable
 It works however if we add on extra CPU:
 
 ....
-./run --cpus 2 --emulator gem5 --static --userland userland/posix/pthread_self.c --userland-args 1
+./run --cpus 2 --emulator gem5 --userland userland/posix/pthread_self.c --userland-args 1
 ....
 
 This has to do with the fact that gem5 has a more simplistic thread implementation that does not spawn one host thread per guest thread CPU. Maybe this is required to achieve reproducible runs? What is the task switch algorithm then?
@@ -10700,8 +10845,8 @@ This has to do with the fact that gem5 has a more simplistic thread implementati
 gem5 threading does however show the expected number of cores, e.g.:
 
 ....
-./run --cpus 1 --userland userland/cpp/thread_hardware_concurrency.cpp --emulator gem5 --static
-./run --cpus 2 --userland userland/cpp/thread_hardware_concurrency.cpp --emulator gem5 --static
+./run --cpus 1 --userland userland/cpp/thread_hardware_concurrency.cpp --emulator gem5
+./run --cpus 2 --userland userland/cpp/thread_hardware_concurrency.cpp --emulator gem5
 ....
 
 outputs `1` and `2` respectively.
@@ -10709,7 +10854,7 @@ outputs `1` and `2` respectively.
 TODO: aarch64 seems to failing to spawn more than 2 threads at 369a47fc6e5c2f4a7f911c1c058b6088f8824463 + 1:
 
 ....
-./run --arch aarch64 --cpus 3 --emulator gem5 --static --userland userland/posix/pthread_self.c --userland-args 2
+./run --arch aarch64 --cpus 3 --emulator gem5 --userland userland/posix/pthread_self.c --userland-args 2
 ....
 
 fails with:
@@ -10984,376 +11129,6 @@ TODO: why doesn't this exist:
 ....
 ls /sys/devices/system/cpu/cpu0/cpufreq
 ....
-
-==== Interesting benchmarks
-
-Buildroot built-in libraries, mostly under Libraries > Other:
-
-* Armadillo `C++`: linear algebra
-* fftw: Fourier transform
-* Flann
-* GSL: various
-* liblinear
-* libspacialindex
-* libtommath
-* qhull
-
-There are not yet enabled, but it should be easy to so, see: xref:add-new-buildroot-packages[xrefstyle=full]
-
-===== Dhrystone
-
-https://en.wikipedia.org/wiki/Dhrystone
-
-Created in the 80's, it is not a representative measure of performance in modern computers anymore. It has mostly been replaced by https://en.wikipedia.org/wiki/SPECint[SPEC], which is... closed source! Unbelievable.
-
-<<buildroot>> has a `dhrystone` package, but because it is so interesting to us, we decided to also build it ourselves, which allows things like static and baremetal compilation more easily.
-
-Build and run on QEMU <<user-mode-simulation>>:
-
-....
-git submodule update --init submodules/dhrystone
-./build-dhrystone --mode userland
-./run --userland "$(./getvar userland_build_dir)/submodules/dhrystone/dhrystone"
-....
-
-Build and run on gem5 use mode:
-
-....
-./build-dhrystone --mode userland --static --force-rebuild
-./run --emulator gem5 --userland "$(./getvar userland_build_dir)/submodules/dhrystone/dhrystone"
-....
-
-TODO automate run more nicely.
-
-Build for <<baremetal>> execution and run it in baremetal QEMU:
-
-....
-# Build our Newlib stubs.
-./build-baremetal --arch aarch64
-./build-dhrystone --arch aarch64 --mode baremetal
-./run --arch aarch64 --baremetal "$(./getvar baremetal_build_dir)/submodules/dhrystone/dhrystone"
-....
-
-TODO: fix the build, just need to factor out all run arguments from link:build-baremetal[] into link:common.py[] and it should just work, no missing syscalls.
-
-If you really want the Buildroot package for some reason, build it with:
-
-....
-./build-buildroot --config 'BR2_PACKAGE_DHRYSTONE=y'
-....
-
-and run inside the guest from `PATH` with:
-
-....
-dhrystone
-....
-
-===== BST vs heap vs hashmap
-
-The following benchmark setup works both:
-
-* on host through timers + https://stackoverflow.com/questions/51952471/why-do-i-get-a-constant-instead-of-logarithmic-curve-for-an-insert-time-benchmar/51953081#51953081[granule]
-* gem5 with <<m5ops-instructions,dumpstats>>, which can get more precise results with `granule == 1`
-
-It has been used to answer:
-
-* BST vs heap: https://stackoverflow.com/questions/6147243/heap-vs-binary-search-tree-bst/29548834#29548834
-* `std::set`: https://stackoverflow.com/questions/2558153/what-is-the-underlying-data-structure-of-a-stl-set-in-c/51944661#51944661
-* `std::map`: https://stackoverflow.com/questions/18414579/what-data-structure-is-inside-stdmap-in-c/51945119#51945119
-
-To benchmark on the host, we do:
-
-....
-./build-userland-in-tree --force-rebuild --optimization-level 3 ./userland/cpp/bst_vs_heap_vs_hashmap.cpp
-./userland/cpp/bst_vs_heap_vs_hashmap.out 10000000 10000 | tee bst_vs_heap_vs_hashmap.dat
-gnuplot \
-  -e 'input_noext="bst_vs_heap_vs_hashmap"' \
-  -e 'heap_zoom_max=50' \
-  -e 'hashmap_zoom_max=400' \
-  ./bst-vs-heap-vs-hashmap.gnuplot \
-;
-xdg-open bst_vs_heap_vs_hashmap.tmp.png
-....
-
-The parameters `heap_zoom_max` and `hashmap_zoom_max` are chosen manually interactively to best showcase the regions of interest in  those plots.
-
-First we build the benchmark with <<m5ops-instructions>> enabled, and then we run it and extract the stats:
-
-....
-./build-userland \
-  --arch x86_64 \
-  --ccflags='-DLKMC_M5OPS_ENABLE=1' \
-  --force-rebuild userland/cpp/bst_vs_heap_vs_hashmap.cpp \
-  --static \
-  --optimization-level 3 \
-;
-./run \
-  --arch x86_64 \
-  --emulator gem5 \
-  --static \
-  --userland userland/cpp/bst_vs_heap_vs_hashmap.cpp \
-  --userland-args='100000' \
-  -- \
-  --cpu-type=DerivO3CPU \
-  --caches \
-  --l2cache \
-  --l1d_size=32kB \
-  --l1i_size=32kB \
-  --l2_size=256kB \
-  --l3_size=20MB \
-;
-./bst-vs-heap-vs-hashmap-gem5-stats --arch x86_64 | tee bst_vs_heap_vs_hashmap_gem5.dat
-gnuplot \
-  -e 'input_noext="bst_vs_heap_vs_hashmap_gem5"' \
-  -e 'heap_zoom_max=500' \
-  -e 'hashmap_zoom_max=400' \
-  ./bst-vs-heap-vs-hashmap.gnuplot \
-;
-xdg-open bst_vs_heap_vs_hashmap_gem5.tmp.png
-....
-
-TODO: the gem5 simulation blows up on a tcmalloc allocation somewhere near 25k elements as of 3fdd83c2c58327d9714fa2347c724b78d7c05e2b + 1, likely linked to the extreme inefficiency of the stats collection?
-
-The cache sizes were chosen to match the host <<p51>> to improve the comparison. Ideally we should also use the same standard library.
-
-Note that this will take a long time, and will produce a humongous ~40Gb stats file as explained at: xref:gem5-only-dump-selected-stats[xrefstyle=full]
-
-Sources:
-
-* link:userland/cpp/bst_vs_heap_vs_hashmap.cpp[]
-* link:bst-vs-heap-vs-hashmap-gem5-stats[]
-* link:bst-vs-heap-vs-hashmap.gnuplot[]
-
-===== BLAS
-
-Buildroot supports it, which makes everything just trivial:
-
-....
-./build-buildroot --config 'BR2_PACKAGE_OPENBLAS=y'
-./build-userland --package openblas -- userland/libs/openblas/hello.c
-./run --eval-after './libs/openblas/hello.out; echo $?'
-....
-
-Outcome: the test passes:
-
-....
-0
-....
-
-Source: link:userland/libs/openblas/hello.c[]
-
-The test performs a general matrix multiplication:
-
-....
-    |  1.0 -3.0 |   |  1.0  2.0  1.0 |       |  0.5  0.5  0.5 |   |  11.0 - 9.0  5.0 |
-1 * |  2.0  4.0 | * | -3.0  4.0 -1.0 | + 2 * |  0.5  0.5  0.5 | = | - 9.0  21.0 -1.0 |
-    |  1.0 -1.0 |                            |  0.5  0.5  0.5 |   |   5.0 - 1.0  3.0 |
-....
-
-This can be deduced from the Fortran interfaces at
-
-....
-less "$(./getvar buildroot_build_build_dir)"/openblas-*/reference/dgemmf.f
-....
-
-which we can map to our call as:
-
-....
-C := alpha*op( A )*op( B ) + beta*C,
-SUBROUTINE DGEMMF(               TRANA,        TRANB,     M,N,K,  ALPHA,A,LDA,B,LDB,BETA,C,LDC)
-cblas_dgemm(      CblasColMajor, CblasNoTrans, CblasTrans,3,3,2  ,1,    A,3,  B,3,  2   ,C,3  );
-....
-
-===== Eigen
-
-Header only linear algebra library with a mainline Buildroot package:
-
-....
-./build-buildroot --config 'BR2_PACKAGE_EIGEN=y'
-./build-userland --package eigen -- userland/libs/eigen/hello.cpp
-....
-
-Just create an array and print it:
-
-....
-./run --eval-after './libs/eigen/hello.out'
-....
-
-Output:
-
-....
-  3  -1
-2.5 1.5
-....
-
-Source: link:userland/libs/eigen/hello.cpp[]
-
-This example just creates a matrix and prints it out.
-
-Tested on: https://github.com/cirosantilli/linux-kernel-module-cheat/commit/a4bdcf102c068762bb1ef26c591fcf71e5907525[a4bdcf102c068762bb1ef26c591fcf71e5907525]
-
-===== PARSEC benchmark
-
-We have ported parts of the http://parsec.cs.princeton.edu[PARSEC benchmark] for cross compilation at: https://github.com/cirosantilli/parsec-benchmark See the documentation on that repo to find out which benchmarks have been ported. Some of the benchmarks were are segfaulting, they are documented in that repo.
-
-There are two ways to run PARSEC with this repo:
-
-* <<parsec-benchmark-without-parsecmgmt,without `pasecmgmt`>>, most likely what you want
-* <<parsec-benchmark-with-parsecmgmt,with `pasecmgmt`>>
-
-====== PARSEC benchmark without parsecmgmt
-
-....
-./build --arch arm --download-dependencies gem5-buildroot parsec-benchmark
-./build-buildroot --arch arm --config 'BR2_PACKAGE_PARSEC_BENCHMARK=y'
-./run --arch arm --emulator gem5
-....
-
-Once inside the guest, launch one of the `test` input sized benchmarks manually as in:
-
-....
-cd /parsec/ext/splash2x/apps/fmm/run
-../inst/arm-linux.gcc/bin/fmm 1 < input_1
-....
-
-To find run out how to run many of the benchmarks, have a look at the `test.sh` script of the `parse-benchmark` repo.
-
-From the guest, you can also run it as:
-
-....
-cd /parsec
-./test.sh
-....
-
-but this might be a bit time consuming in gem5.
-
-====== PARSEC change the input size
-
-Running a benchmark of a size different than `test`, e.g. `simsmall`, requires a rebuild with:
-
-....
-./build-buildroot \
-  --arch arm \
-  --config 'BR2_PACKAGE_PARSEC_BENCHMARK=y' \
-  --config 'BR2_PACKAGE_PARSEC_BENCHMARK_INPUT_SIZE="simsmall"' \
-  -- parsec_benchmark-reconfigure \
-;
-....
-
-Large input may also require tweaking:
-
-* <<br2_target_rootfs_ext2_size>> if the unpacked inputs are large
-* <<memory-size>>, unless you want to meet the OOM killer, which is admittedly kind of fun
-
-`test.sh` only contains the run commands for the `test` size, and cannot be used for `simsmall`.
-
-The easiest thing to do, is to https://superuser.com/questions/231002/how-can-i-search-within-the-output-buffer-of-a-tmux-shell/1253137#1253137[scroll up on the host shell] after the build, and look for a line of type:
-
-....
-Running /root/linux-kernel-module-cheat/out/aarch64/buildroot/build/parsec-benchmark-custom/ext/splash2x/apps/ocean_ncp/inst/aarch64-linux.gcc/bin/ocean_ncp -n2050 -p1 -e1e-07 -r20000 -t28800
-....
-
-and then tweak the command found in `test.sh` accordingly.
-
-Yes, we do run the benchmarks on host just to unpack / generate inputs. They are expected fail to run since they were build for the guest instead of host, including for x86_64 guest which has a different interpreter than the host's (see `file myexecutable`).
-
-The rebuild is required because we unpack input files on the host.
-
-Separating input sizes also allows to create smaller images when only running the smaller benchmarks.
-
-This limitation exists because `parsecmgmt` generates the input files just before running via the Bash scripts, but we can't run `parsecmgmt` on gem5 as it is too slow!
-
-One option would be to do that inside the guest with QEMU.
-
-Also, we can't generate all input sizes at once, because many of them have the same name and would overwrite one another...
-
-PARSEC simply wasn't designed with non native machines in mind...
-
-====== PARSEC benchmark with parsecmgmt
-
-Most users won't want to use this method because:
-
-* running the `parsecmgmt` Bash scripts takes forever before it ever starts running the actual benchmarks on gem5
-+
-Running on QEMU is feasible, but not the main use case, since QEMU cannot be used for performance measurements
-* it requires putting the full `.tar` inputs on the guest, which makes the image twice as large (1x for the `.tar`, 1x for the unpacked input files)
-
-It would be awesome if it were possible to use this method, since this is what Parsec supports officially, and so:
-
-* you don't have to dig into what raw command to run
-* there is an easy way to run all the benchmarks in one go to test them out
-* you can just run any of the benchmarks that you want
-
-but it simply is not feasible in gem5 because it takes too long.
-
-If you still want to run this, try it out with:
-
-....
-./build-buildroot \
-  --arch aarch64 \
-  --config 'BR2_PACKAGE_PARSEC_BENCHMARK=y' \
-  --config 'BR2_PACKAGE_PARSEC_BENCHMARK_PARSECMGMT=y' \
-  --config 'BR2_TARGET_ROOTFS_EXT2_SIZE="3G"' \
-  -- parsec_benchmark-reconfigure \
-;
-....
-
-And then you can run it just as you would on the host:
-
-....
-cd /parsec/
-bash
-. env.sh
-parsecmgmt -a run -p splash2x.fmm -i test
-....
-
-====== PARSEC uninstall
-
-If you want to remove PARSEC later, Buildroot doesn't provide an automated package removal mechanism as mentioned at: xref:remove-buildroot-packages[xrefstyle=full], but the following procedure should be satisfactory:
-
-....
-rm -rf \
-  "$(./getvar buildroot_download_dir)"/parsec-* \
-  "$(./getvar buildroot_build_dir)"/build/parsec-* \
-  "$(./getvar buildroot_build_dir)"/build/packages-file-list.txt \
-  "$(./getvar buildroot_build_dir)"/images/rootfs.* \
-  "$(./getvar buildroot_build_dir)"/target/parsec-* \
-;
-./build-buildroot --arch arm
-....
-
-====== PARSEC benchmark hacking
-
-If you end up going inside link:submodules/parsec-benchmark[] to hack up the benchmark (you will!), these tips will be helpful.
-
-Buildroot was not designed to deal with large images, and currently cross rebuilds are a bit slow, due to some image generation and validation steps.
-
-A few workarounds are:
-
-* develop in host first as much as you can. Our PARSEC fork supports it.
-+
-If you do this, don't forget to do a:
-+
-....
-cd "$(./getvar parsec_source_dir)"
-git clean -xdf .
-....
-before going for the cross compile build.
-+
-* patch Buildroot to work well, and keep cross compiling all the way. This should be totally viable, and we should do it.
-+
-Don't forget to explicitly rebuild PARSEC with:
-+
-....
-./build-buildroot \
-  --arch arm \
-  --config 'BR2_PACKAGE_PARSEC_BENCHMARK=y' \
-  -- parsec_benchmark-reconfigure \
-;
-....
-+
-You may also want to test if your patches are still functionally correct inside of QEMU first, which is a faster emulator.
-* sell your soul, and compile natively inside the guest. We won't do this, not only because it is evil, but also because Buildroot explicitly does not support it: https://buildroot.org/downloads/manual/manual.html#faq-no-compiler-on-target ARM employees have been known to do this: https://github.com/arm-university/arm-gem5-rsk/blob/aa3b51b175a0f3b6e75c9c856092ae0c8f2a7cdc/parsec_patches/qemu-patch.diff
 
 === gem5 kernel command line parameters
 
@@ -11830,7 +11605,10 @@ gem5 allocates some magic instructions on unused instruction encodings for conve
 
 Those instructions are exposed through the <<m5>> in tree executable.
 
-To make things simpler to understand, you can play around with our own minimized educational `m5` subset link:userland/c/m5ops.c[].
+To make things simpler to understand, you can play around with our own minimized educational `m5` subset:
+
+* link:userland/c/m5ops.c[]
+* link:userland/cpp/m5ops.cpp[]
 
 The instructions used by `./c/m5ops.out` are present in link:lkmc/m5ops.h[] in a very simple to understand and reuse inline assembly form.
 
@@ -11841,7 +11619,6 @@ To use that file, first rebuild `m5ops.out` with the m5ops instructions enabled 
   --arch aarch64 \
   --ccflags='-DLKMC_M5OPS_ENABLE=1' \
   --force-rebuild \
-  --static \
   userland/c/m5ops.c \
 ;
 ./build-buildroot --arch aarch64
@@ -12159,6 +11936,7 @@ Using Buildroot for gem5 is still convenient because we use it to:
 
 The out of build tree is required, because otherwise Buildroot would copy the output build of all archs to each arch directory, resulting in `arch^2` build copies, which is significant.
 
+[[gem5-fs-biglittle]]
 === gem5 fs_bigLITTLE
 
 By default, we use `configs/example/fs.py` script.
@@ -12171,7 +11949,7 @@ The `--gem5-script biglittle` option enables the alternative `configs/example/ar
 
 Advantages over `fs.py`:
 
-* more representative of mobile ARM SoCs, which almost always have  big little cluster
+* more representative of mobile ARM SoCs, which almost always have big little cluster
 * simpler than `fs.py`, and therefore easier to understand and modify
 
 Disadvantages over `fs.py`:
@@ -12238,10 +12016,17 @@ https://stackoverflow.com/questions/52279971/how-to-run-the-gem5-unit-tests
 Running the larger 2019 regression tests is exposed for example with:
 
 ....
-./gem5-regression --arch aarch64 -- --length quick
+./build-gem5 --arch aarch64
+./gem5-regression --arch aarch64 -- --length quick --length long
 ....
 
-TODO skip the build by default with `--skip-build` since we already manage it with `./build-gem5`. But we can't do this because it is the build step that downloads the test binaries. We need to find a way to either download the binaries without building, or to pass the exact same scons build options through `test/main.py`.
+After the first run has downloaded the test binaries for you, you can speed up the process a little bit by skipping an useless scons call:
+
+....
+./gem5-regression --arch aarch64 -- --length quick --length long --skip-build
+....
+
+Note however that `--skip-build` is required at least once per branch to download the test binaries, because the test interface is bad.
 
 === gem5 simulate() limit reached
 
@@ -12263,7 +12048,6 @@ A trivial and very direct way to see message would be:
 ....
 ./run \
   --emulator gem5 \
-  --static \
   --userland \userland/arch/x86_64/freestanding/linux/hello.S \
   --trace-insts-stdout \
   -- \
@@ -12290,7 +12074,6 @@ The exact same can be achieved with the older hardcoded `--maxinsts` mechanism p
 ....
 ./run \
   --emulator gem5 \
-  --static \
   --userland \userland/arch/x86_64/freestanding/linux/hello.S \
   --trace-insts-stdout \
   -- \
@@ -12298,12 +12081,15 @@ The exact same can be achieved with the older hardcoded `--maxinsts` mechanism p
 ;
 ....
 
+Other related fs.py options are:
+
+* `--abs-max-tick`: set the maximum guest simulation time. The same scale as the ExecAll trace is used. E.g., for the above example with 3 instructions, the same trace would be achieved with a value of 3000.
+
 The message also shows on <<user-mode-simulation>> deadlocks, for example in link:userland/posix/pthread_deadlock.c[]:
 
 ....
 ./run \
   --emulator gem5 \
-  --static \
   --userland userland/posix/pthread_deadlock.c \
   --userland-args 1 \
 ;
@@ -12340,7 +12126,7 @@ Exiting @ tick 18446744073709551615 because simulate() limit reached
 
 Other examples of the message:
 
-* <<arm-multicore>> with a single CPU stays stopped at an WFE sleep instruction
+* <<arm-baremetal-multicore>> with a single CPU stays stopped at an WFE sleep instruction
 * this sample bug on se.py multithreading: https://github.com/cirosantilli/linux-kernel-module-cheat/issues/81
 
 === gem5 build options
@@ -12357,8 +12143,8 @@ TODO test properly, benchmark vs GCC.
 
 ....
 sudo apt-get install clang
-./build-gem5 --clang
-./run --clang --emulator gem5
+./build-gem5 --gem5-clang
+./run --emulator gem5 --gem5-clang
 ....
 
 ==== gem5 sanitation build
@@ -12414,6 +12200,8 @@ Indirect leak of 1346 byte(s) in 2 object(s) allocated from:
 ....
 
 From the message, this appears however to be a Python / pyenv11 bug however and not in gem5 specifically. I think it worked when I tried it in the past in an older gem5 / Ubuntu.
+
+`--without-tcmalloc` is needed / a good idea when using `--with-asan`: https://stackoverflow.com/questions/42712555/address-sanitizer-fsanitize-address-works-with-tcmalloc since both do more or less similar jobs, see also <<memory-leaks>>.
 
 ==== gem5 Ruby build
 
@@ -12472,9 +12260,20 @@ gem5 has a few in tree CPU models for different purposes.
 
 In fs.py and se.py, those are selectable with the `--cpu-type` option.
 
-TODO are there any public performance correlations between those models and real cores? The information to make accurate models isn't generally public for non-free CPUs, so either you must either rely vendor provided models or on experiments/reverse engineering.
+The information to make highly accurate models isn't generally public for non-free CPUs, so either you must either rely vendor provided models or on experiments/reverse engineering.
 
-==== gem5 BaseSimpleCPU
+There is no simple answer for "what is the best CPU", in theory you have to understand each model and decide which one is closer your target system.
+
+Whenever possible, stick to:
+
+* vendor provide ones obviously, e.g. ARM Holdings models of ARM cores, unless there is good reason not to, as they are the most likely to be accurate
+* newer models instead of older models
+
+Both of those can be checked with `git log` and `git blame`.
+
+==== List gem5 CPU types
+
+===== gem5 BaseSimpleCPU
 
 Simple abstract CPU without a pipeline.
 
@@ -12485,11 +12284,17 @@ Implementations:
 * `AtomicSimpleCPU`: the default one. Memory accesses happen instantaneously. The fastest simulation except for KVM, but not realistic at all.
 +
 Useful to <<gem5-restore-checkpoint-with-a-different-cpu,boot Linux fast and then checkpoint and switch to a more detailed CPU>>.
-* `TimingSimpleCPU`: memory accesses are realistic, but the CPU has no pipeline. The simulation is faster than detailed models, but slower than `AtomicSimpleCPU`. TODO: application?
+* `TimingSimpleCPU`: memory accesses are realistic, but the CPU has no pipeline. The simulation is faster than detailed models, but slower than `AtomicSimpleCPU`.
++
+To fully understand `TimingSimpleCPU`, see: <<gem5-event-queue-timingsimplecpu-syscall-emulation-freestanding-example-analysis>>.
++
+Without caches, the CPU just stalls all the time waiting for memory requests for every advance of the PC or memory read from a instruction!
++
+Caches do make a difference here of course, and lead to much faster memory return times.
 
 <<gem5-kvm,KVM CPUs>> are an alternative way of fast forwarding boot when they work.
 
-==== gem5 MinorCPU
+===== gem5 MinorCPU
 
 Generic in-order core that does not model any specific CPU.
 
@@ -12524,8 +12329,13 @@ ex5 LITTLE core (based on the ARM Cortex-A7)
 ____
 +
 Implemented by Pierre-Yves Péneau from LIRMM, which is a research lab in Montpellier, France, in 2017.
+* `O3_ARM_v7a`: implemented by Ronald Dreslinski from the https://en.wikipedia.org/wiki/University_of_Michigan[University of Michigan] in 2012
++
+Not sure why it has v7a in the name, since I believe the CPUs are just the microarchitectural implementation of any ISA, and the v8 hello world did run.
++
+The CLI option is named slightly differently as: `--cpu-type O3_ARM_v7a_3`.
 
-==== gem5 DeriveO3CPU
+===== gem5 DeriveO3CPU
 
 Generic out-of-order core. "O3" Stands for "Out Of Order"!
 
@@ -12557,6 +12367,35 @@ TODO: describe the main characteristics of each platform, as of gem5 5e83d703522
 * `VExpress_GEM5_V1_DPU`: `VExpress_GEM5_V1` with DP650 instead of HDLCD, selected automatically by `./run --dp650`, see also: <<gem5-graphic-mode-dp650>>
 * `VExpress_GEM5_V2`: VExpress_GEM5_V1 with GICv3, uses a different bootloader `arm/aarch64_bootloader/boot_emm_v2.arm64` TODO is it because of GICv3?
 * anything that does not start with: `VExpress_GEM5_`: old and bad, don't use them
+
+=== gem5 upstream images
+
+Present at:
+
+* http://www.gem5.org/dist/current/arm/
+* http://www.gem5.org/dist/current/x86/
+
+Depending on which archive you download from there, you can find some of:
+
+* Ubuntu based images
+* precompiled Linux kernels, with the <<gem5-arm-linux-kernel-patches>> for arm
+* precompiled <<gem5-bootloaders>> for ISAs that have them, e.g. ARM
+* precompiled DTBs if you don't want to use autogeneration for some crazy reason
+
+Some of those images are also used on the <<gem5-unit-tests>> continuous integration.
+
+Could be used as an alternative to this repository. But why would you do that? :-)
+
+E.g. to use a precompiled ARM kernel:
+
+....
+mkdir aarch-system-201901106
+cd aarch-system-201901106
+wget http://www.gem5.org/dist/current/arm/aarch-system-201901106.tar.bz2
+tar xvf aarch-system-201901106.tar.bz2
+cd ..
+./run --arch aarch64 --emulator gem5 --linux-exec aarch-system-201901106/binaries/vmlinux.arm64
+....
 
 === gem5 internals
 
@@ -12870,7 +12709,7 @@ if (_status != Idle)
 +
 A new event is scheduled for the current time itself. TODO what is this event?
 
-Let's study the first event. From GDB, it's stack trace is:
+Let's study the first event. From <<debug-the-emulator,GDB>>, let's break at the point that prints messages: `Trace::OstreamLogger::logMessage()` to see where events are being scheduled from:
 
 ....
 Trace::OstreamLogger::logMessage() at trace.cc:149 0x5555593b3b1e
@@ -12936,7 +12775,7 @@ if (event->isExitEvent()) {
     return event;
 ....
 
-And at long, we can guess without reading the code that `Event_71` is comes from the SE implementation of the exit syscall, so let's just confirm, the trace contains:
+And at last, we can guess without reading the code that `Event_71` is comes from the SE implementation of the exit syscall, so let's just confirm, the trace contains:
 
 ....
 exitSimLoop() at sim_events.cc:97 0x5555594746e0
@@ -12957,6 +12796,353 @@ new GlobalSimLoopExitEvent(when + simQuantum, message, exit_code, repeat);
 ....
 
 Tested at b4879ae5b0b6644e6836b0881e4da05c64a6550d.
+
+===== gem5 event queue TimingSimpleCPU syscall emulation freestanding example analysis
+
+TODO: analyze better what each of the memory event mean. For now, we have just collected a bunch of data there, but needs interpreting. The CPU specifics in this section are already insightful however.
+
+<<gem5-basesimplecpu,TimingSimpleCPU>> should be the second simplest CPU to analyze, so let's give it a try:
+
+....
+./run \
+  --arch aarch64 \
+  --emulator gem5 \
+  --userland userland/arch/aarch64/freestanding/linux/hello.S \
+  --trace Event,ExecAll \
+  --trace-stdout \
+  -- \
+  --cpu-type TimingSimpleCPU \
+;
+....
+
+As of LKMC 9bfbff244d713de40e5686bd370eadb20cf78c7b + 1 the log is now much more complex.
+
+Here is an abridged version with:
+
+* the beginning up to the second instruction
+* end ending
+
+because all that happens in between is exactly the same as the first two instructions and therefore boring:
+
+....
+      0: system.cpu.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
+**** REAL SIMULATION ****
+      0: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 7786250
+      0: system.mem_ctrls_1.wrapped_function_event: EventFunctionWrapped event scheduled @ 7786250
+      0: Event_74: generic event scheduled @ 0
+info: Entering event queue @ 0.  Starting simulation...
+      0: Event_74: generic event rescheduled @ 18446744073709551615
+      0: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
+      0: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped event scheduled @ 1000
+      0: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
+      0: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 46250
+      0: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 5000
+      0: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
+  46250: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped event scheduled @ 74250
+  74250: system.membus.slave[1]-RespPacketQueue.wrapped_function_event: EventFunctionWrapped event scheduled @ 77000
+  74250: system.membus.respLayer1.wrapped_function_event: EventFunctionWrapped event scheduled @ 77000
+  77000: Event_40: Timing CPU icache tick event scheduled @ 77000
+  77000: system.cpu A0 T0 : @asm_main_after_prologue    :   movz   x0, #1, #0        : IntAlu :  D=0x0000000000000001  flags=(IsInteger)
+  77000: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 77000
+  77000: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped event scheduled @ 78000
+  77000: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 95750
+  77000: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 77000
+  95750: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped event scheduled @ 123750
+ 123750: system.membus.slave[1]-RespPacketQueue.wrapped_function_event: EventFunctionWrapped event scheduled @ 126000
+ 123750: system.membus.respLayer1.wrapped_function_event: EventFunctionWrapped event scheduled @ 126000
+ 126000: Event_40: Timing CPU icache tick event scheduled @ 126000
+      [...]
+ 469000: system.cpu A0 T0 : @asm_main_after_prologue+28    :   svc   #0x0               : IntAlu :   flags=(IsSerializeAfter|IsNonSpeculative|IsSyscall)
+ 469000: Event_75: generic event scheduled @ 469000
+....
+
+`0: system.cpu.wrapped_function_event` schedule the initial tick, much like for for `AtomicSimpleCPU`. This time however, it is not a tick, but rather a fetch event that gets scheduled:
+
+....
+TimingSimpleCPU::activateContext(ThreadID thread_num)
+{
+    DPRINTF(SimpleCPU, "ActivateContext %d\n", thread_num);
+
+    assert(thread_num < numThreads);
+
+    threadInfo[thread_num]->notIdleFraction = 1;
+    if (_status == BaseSimpleCPU::Idle)
+        _status = BaseSimpleCPU::Running;
+
+    // kick things off by initiating the fetch of the next instruction
+    if (!fetchEvent.scheduled())
+        schedule(fetchEvent, clockEdge(Cycles(0)));
+....
+
+We have a fetch instead of a tick here compared to `AtomicSimpleCPU`, because in the timing CPU we must first get the instruction opcode from DRAM, which takes some cycles to return!
+
+By looking at the source, we see that fetchEvent runs `TimingSimpleCPU::fetch`.
+
+`0: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 7786250`: from GDB we see that it comes from `DRAMCtrl::startup` in `mem/dram_ctrl.cc` which contains:
+
+....
+void
+DRAMCtrl::startup()
+{
+    // remember the memory system mode of operation
+    isTimingMode = system()->isTimingMode();
+
+    if (isTimingMode) {
+        // timestamp offset should be in clock cycles for DRAMPower
+        timeStampOffset = divCeil(curTick(), tCK);
+
+        // update the start tick for the precharge accounting to the
+        // current tick
+        for (auto r : ranks) {
+            r->startup(curTick() + tREFI - tRP);
+        }
+
+        // shift the bus busy time sufficiently far ahead that we never
+        // have to worry about negative values when computing the time for
+        // the next request, this will add an insignificant bubble at the
+        // start of simulation
+        nextBurstAt = curTick() + tRP + tRCD;
+    }
+}
+....
+
+which then calls:
+
+....
+void
+DRAMCtrl::Rank::startup(Tick ref_tick)
+{
+    assert(ref_tick > curTick());
+
+    pwrStateTick = curTick();
+
+    // kick off the refresh, and give ourselves enough time to
+    // precharge
+    schedule(refreshEvent, ref_tick);
+}
+....
+
+By looking up some variable definitions in the source, we now we see some memory parameters clearly:
+
+* ranks: `std::vector<DRAMCtrl::Rank*>` with 2 elements. TODO why do we have 2? What does it represent? Likely linked to <<gem5-config-ini,`config.ini`>> at `system.mem_ctrls.ranks_per_channel=2`
+* `tCK=1250`, `tREFI=7800000`, `tRP=13750`, `tRCD=13750`: all defined in a single code location with a comment:
++
+....
+     /**
+     * Basic memory timing parameters initialized based on parameter
+     * values.
+     */
+....
++
+Their values can be seen under `config.ini` and they are documented in `src/mem/DRAMCtrl.py` e.g.:
++
+....
+    # the base clock period of the DRAM
+    tCK = Param.Latency("Clock period")
+
+    # minimum time between a precharge and subsequent activate
+    tRP = Param.Latency("Row precharge time")
+
+    # the amount of time in nanoseconds from issuing an activate command
+    # to the data being available in the row buffer for a read/write
+    tRCD = Param.Latency("RAS to CAS delay")
+
+    # refresh command interval, how often a "ref" command needs
+    # to be sent. It is 7.8 us for a 64ms refresh requirement
+    tREFI = Param.Latency("Refresh command interval")
+....
+
+So we realize that we are going into deep DRAM modelling, more detail that a mere mortal should ever need to know.
+
+`curTick() + tREFI - tRP = 0 + 7800000 - 13750 = 7786250` which is when that `refreshEvent` was scheduled. Our simulation ends way before that point however, so we will never know what it did thank God.
+
+`0: Event_74: generic event scheduled @ 0` and `0: Event_74: generic event rescheduled @ 18446744073709551615`: schedule the final exit event, same as for `AtomicSimpleCPU`
+
+The next interesting event is:
+
+....
+system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
+....
+
+which comes from:
+
+....
+#0  Trace::OstreamLogger::logMessage
+#1  void Trace::Logger::dprintf
+#2  Event::trace
+#3  EventQueue::schedule
+#4  EventManager::schedule
+#5  DRAMCtrl::addToReadQueue
+#6  DRAMCtrl::recvTimingReq
+#7  DRAMCtrl::MemoryPort::recvTimingReq
+#8  TimingRequestProtocol::sendReq
+#9  MasterPort::sendTimingReq
+#10 CoherentXBar::recvTimingReq
+#11 CoherentXBar::CoherentXBarSlavePort::recvTimingReq(Packet*))
+#12 TimingRequestProtocol::sendReq
+#13 MasterPort::sendTimingReq
+#14 TimingSimpleCPU::sendFetch
+#15 TimingSimpleCPU::FetchTranslation::finish
+#16 ArmISA::TLB::translateComplete
+#17 ArmISA::TLB::translateTiming
+#18 ArmISA::TLB::translateTiming
+#19 TimingSimpleCPU::fetch
+#20 TimingSimpleCPU::<lambda()>::operator()(void)
+#21 std::_Function_handler<void(), TimingSimpleCPU::TimingSimpleCPU(TimingSimpleCPUParams*)::<lambda()> >
+#22 std::function<void)>::operator()() const
+#23 EventFunctionWrapper::process
+#24 EventQueue::serviceOne
+#25 doSimLoop
+#26 simulate
+....
+
+From the trace, we see that we are already running from the event queue. Therefore, we must have been running a previously scheduled event, and the previous event logs, the only such event is `0: system.cpu.wrapped_function_event: EventFunctionWrapped event scheduled @ 0` which scheduled a memory fetch!
+
+From the backtrace we see the tortuous path that the data request takes, going through:
+
+* `ArmISA::TLB`
+* `CoherentXBar`
+* `DRAMCtrl`
+
+The scheduling happens at frame `#5`:
+
+....
+     // If we are not already scheduled to get a request out of the
+     // queue, do so now
+     if (!nextReqEvent.scheduled()) {
+         DPRINTF(DRAM, "Request scheduled immediately\n");
+         schedule(nextReqEvent, curTick());
+     }
+....
+
+and from a quick source grep we see that `nextReqEvent` is a `DRAMCtrl::processNextReqEvent`.
+
+The next schedule:
+
+....
+0: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped event scheduled @ 1000
+....
+
+and does a `BaseXBar::Layer::releaseLayer` event.
+
+This one is also coming from the request queue at `TimingSimpleCPU::fetch`. We deduce therefore that the single previous fetch event scheduled not one, but two events!
+
+Now:
+
+....
+      0: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
+....
+
+comes from the previously scheduled `DRAMCtrl::processNextReqEvent` and schedules `DRAMCtrl::Rank::processPrechargeEvent`.
+
+Now:
+
+....
+      0: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 46250
+....
+
+also runs from `DRAMCtrl::processNextReqEvent` and schedules a `DRAMCtrl::processRespondEvent`.
+
+I'm getting bored, let's skip to the line that appears to matter for the first instruction:
+
+....
+  46250: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped event scheduled @ 74250
+....
+
+But I got even more bored, and I will now skip to the first event before the instruction:
+
+....
+  77000: Event_40: Timing CPU icache tick event scheduled @ 77000
+  77000: system.cpu A0 T0 : @asm_main_after_prologue    :   movz   x0, #1, #0        : IntAlu :  D=0x0000000000000001  flags=(IsInteger)
+....
+
+This event comes from `PacketQueue::processSendEvent` and schedules itself:
+
+....
+void
+TimingSimpleCPU::TimingCPUPort::TickEvent::schedule(PacketPtr _pkt, Tick t)
+{
+    pkt = _pkt;
+    cpu->schedule(this, t);
+}
+....
+
+which polymorphically resolves to:
+
+....
+void
+TimingSimpleCPU::IcachePort::ITickEvent::process()
+{
+    cpu->completeIfetch(pkt);
+}
+....
+
+and so `TimingSimpleCPU::completeIfetch` is, at last, the interesting `TimingSimpleCPU` function!
+
+The end of this instruction must be setting things up in a way that can continue the PC walk loop, and by looking at the source and traces, it is clearly from: `TimingSimpleCPU::advanceInst` which calls `TimingSimpleCPU::fetch`, which is the very thing we did in this simulation!!! OMG, that's the loop.
+
+One final thing to check, is how the memory reads are going to make the processor stall in the middle of an instruction.
+
+For that, we can GDB to the `TimingSimpleCPU::completeIfetch` of the first LDR done in our test program.
+
+By doing that, we see that this time at:
+
+....
+if (curStaticInst && curStaticInst->isMemRef()) {
+    // load or store: just send to dcache
+    Fault fault = curStaticInst->initiateAcc(&t_info, traceData);
+
+    if (_status == BaseSimpleCPU::Running) {
+    }
+} else if (curStaticInst) {
+    // non-memory instruction: execute completely now
+    Fault fault = curStaticInst->execute(&t_info, traceData);
+....
+
+* `+curStaticInst->isMemRef()+` is true, and there is no instruction `execute` call in that part of the branch, only for instructions that don't touch memory
+* `_status` is `BaseSimpleCPU::Status::DcacheWaitResponse` and `advanceInst` is not yet called
+
+So, where is the `execute` happening? Well, I'll satisfy myself with a quick source grep and guess:
+
+* `+curStaticInst->initiateAcc+` sets up some memory request events
+* which likely lead up to: `TimingSimpleCPU::completeDataAccess`, which off the bat ends in `advanceInst`.
++
+It also calls `+curStaticInst->completeAcc+`, which pairs up with the `initiateAcc` call.
+
+===== gem5 event queue TimingSimpleCPU syscall emulation freestanding example analysis with caches
+
+Let's just add --caches to see if things go any faster:
+
+....
+      0: system.cpu.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
+**** REAL SIMULATION ****
+      0: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 7786250
+      0: system.mem_ctrls_1.wrapped_function_event: EventFunctionWrapped event scheduled @ 7786250
+      0: Event_84: generic event scheduled @ 0
+info: Entering event queue @ 0.  Starting simulation...
+      0: Event_84: generic event rescheduled @ 18446744073709551615
+      0: system.cpu.icache.mem_side-MemSidePort.wrapped_function_event: EventFunctionWrapped event scheduled @ 1000
+   1000: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 1000
+   1000: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped event scheduled @ 2000
+   1000: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 1000
+   1000: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 46250
+   1000: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 5000
+   1000: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 1000
+  46250: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped event scheduled @ 74250
+  74250: system.membus.slave[1]-RespPacketQueue.wrapped_function_event: EventFunctionWrapped event scheduled @ 77000
+  74250: system.membus.respLayer1.wrapped_function_event: EventFunctionWrapped event scheduled @ 80000
+  77000: system.cpu.icache.cpu_side-CpuSidePort.wrapped_function_event: EventFunctionWrapped event scheduled @ 78000
+  78000: Event_40: Timing CPU icache tick event scheduled @ 78000
+  78000: system.cpu A0 T0 : @asm_main_after_prologue    :   movz   x0, #1, #0        : IntAlu :  D=0x0000000000000001  flags=(IsInteger)
+  78000: system.cpu.icache.cpu_side-CpuSidePort.wrapped_function_event: EventFunctionWrapped event scheduled @ 83000
+  83000: Event_40: Timing CPU icache tick event scheduled @ 83000
+  83000: system.cpu A0 T0 : @asm_main_after_prologue+4    :   adr   x1, #28            : IntAlu :  D=0x0000000000400098  flags=(IsInteger)
+  [...]
+ 191000: system.cpu A0 T0 : @asm_main_after_prologue+28    :   svc   #0x0               : IntAlu :   flags=(IsSerializeAfter|IsNonSpeculative|IsSyscall)
+ 191000: Event_85: generic event scheduled @ 191000
+....
+
+So yes, `--caches` does work here, leading to a runtime of 191000 rather than 469000 without caches!
 
 ===== gem5 event queue MinorCPU syscall emulation freestanding example analysis
 
@@ -13063,6 +13249,7 @@ The code generation exists partly to support insanely generic cross ISA instruct
 
 But it has been widely overused to insanity. It likely also exists partly because when the project started in 2003 C++ compilers weren't that good, so you couldn't rely on features like templates that much.
 
+[[gem5-the-isa]]
 ===== gem5 THE_ISA
 
 Generated code at: `build/<ISA>/config/the_isa.hh` which contains amongst other lines:
@@ -13158,6 +13345,26 @@ The horrendous downsides of this are:
 * when <<debug-the-emulator,debugging the emulator>>, it shows you directories inside the build directory rather than in the source tree
 * it is harder to separate which files are <<gem5-code-generation,generated>> and which are in-tree when grepping for code generated definitions
 
+=== gem5 bootloaders
+
+Certain ISAs like ARM have bootloaders that are automatically run before the main image to setup basic system state.
+
+We cross compile those bootloaders from source automatically during `./build-gem5`.
+
+As of gem5 bcf041f257623e5c9e77d35b7531bae59edc0423, the source code of the bootloaderes can be found under:
+
+....
+system/arm/
+....
+
+and their selection can be seen under: `src/dev/arm/RealView.py`, e.g.:
+
+....
+    def setupBootLoader(self, cur_sys, loc):
+        if not cur_sys.boot_loader:
+            cur_sys.boot_loader = [ loc('boot_emm.arm64'), loc('boot_emm.arm') ]
+....
+
 == Buildroot
 
 === Introduction to Buildroot
@@ -13178,7 +13385,7 @@ This repo basically wraps around that, and tries to make everything even more aw
 The downsides of Buildroot are:
 
 * the first build takes a while, but it is well worth it
-* the selection of software packages is relatively limited if compared to Debian, e.g. no Java or Python package in guest out of the box.
+* the selection of software packages is relatively limited if compared to Debian.
 +
 In theory, any software can be packaged, and the Buildroot side is easy.
 +
@@ -13318,7 +13525,32 @@ with:
 
 `-f` forces login without asking for the password.
 
-=== Add new Buildroot packages
+=== Add new files to the Buildroot image
+
+There are basically two choices:
+
+* create a Buildroot package: <<add-new-buildroot-packages>>
+* drop your files directly in <<rootfs_overlay>> and follow instructions from that section
+
+If you need to cross compile input files such as C for the guest, then Buildroot packages are definitely the cleaner option as they make cross compilation easy.
+
+However, for a quick initial prototype, it should be fine to just manually compile your files and drop them in <<rootfs_overlay>>.
+
+Ideally, you should still use the Buildroot cross compiler for this which ensures compatibility.
+
+The best way to do that is to use either <<run-toolchain>> or <<getvar>>.
+
+In case you can't for some reason, e.g. if you need to use your own custom toolchain, you should:
+
+* make sure that you have built your toolchain to match the our kernel version. It often just works even if they are not perfectly matched however, partly because the Linux kernel is highly <<update-the-linux-kernel,backwards compatible>>
+* build statically with `-static` to avoid binary compatibility issues with our own glibc
+
+Related threads:
+
+* https://github.com/cirosantilli/linux-kernel-module-cheat/issues/22
+* https://github.com/cirosantilli/linux-kernel-module-cheat/issues/50
+
+==== Add new Buildroot packages
 
 First, see if you can't get away without actually adding a new package, for example:
 
@@ -13341,6 +13573,7 @@ Also mentioned at: https://stackoverflow.com/questions/47320800/how-to-clean-onl
 
 See this for a sample manual workaround: xref:parsec-uninstall[xrefstyle=full].
 
+[[br2-target-rootfs-ext2-size]]
 === BR2_TARGET_ROOTFS_EXT2_SIZE
 
 When adding new large package to the Buildroot root filesystem, it may fail with the message:
@@ -13743,7 +13976,7 @@ cat /proc/sys/vm/overcommit_memory
 
 which is documented in `man proc`.
 
-The default value is `0`, which I can't find a precise documentation for. `2` is precisly documented but I'm lazy to do all calculations. So let's just verify `0` vs `1` by trying to `mmap` 1GiB of memory:
+The default value is `0`, which I can't find a precise documentation for. `2` is precisely documented but I'm lazy to do all calculations. So let's just verify `0` vs `1` by trying to `mmap` 1GiB of memory:
 
 ....
 echo 0 > /proc/sys/vm/overcommit_memory
@@ -13778,6 +14011,8 @@ echo 1 > /proc/sys/vm/overcommit_memory
 This first allows memory overcommit so to that the program can mmap 1GiB, 4x more than total RAM without failing as mentioned at <<malloc-maximum-size>>.
 
 It then walks over every page and writes a value in it to ensure that it is used.
+
+A <<fork-bomb>> is another example that can trigger the OOM killer.
 
 Algorithm used by the OOM: https://unix.stackexchange.com/questions/153585/how-does-the-oom-killer-decide-which-process-to-kill-first
 
@@ -13828,11 +14063,17 @@ Programs under link:userland/cpp/[] are examples of https://en.wikipedia.org/wik
 ** link:userland/cpp/template.cpp[]: basic example
 ** link:userland/cpp/template_class_with_static_member.cpp[]: https://stackoverflow.com/questions/3229883/static-member-initialization-in-a-class-template
 ** link:userland/cpp/if_constexpr.cpp[]: C++17 `if constexpr`
+* iostream
+** link:userland/cpp/copyfmt.cpp[]: `std::copyfmt` restores stream state, see also: https://stackoverflow.com/questions/12560291/set-back-default-floating-point-print-precision-in-c/53673686#53673686
 * fstream
 ** link:userland/cpp/file_write_read.cpp[]
 ** link:userland/cpp/temporary_directory.cpp[]: illustrates `std::filesystem::temp_directory_path` and answers https://stackoverflow.com/questions/3379956/how-to-create-a-temporary-directory-in-c/58454949#58454949
 * random
 ** link:userland/cpp/random.cpp[]
+* containers
+** associative
+*** <<algorithms>> contains a benchmark comparison of different c++ containers
+*** link:userland/cpp/set.cpp[]: `std::set` contains unique keys
 
 [[cpp-multithreading]]
 ==== C++ multithreading
@@ -13843,7 +14084,154 @@ Programs under link:userland/cpp/[] are examples of https://en.wikipedia.org/wik
 ** link:userland/cpp/thread_get_id.cpp[] `std::thread::get_id`
 ** link:userland/cpp/thread_return_value.cpp[]: how to return a value from a thread
 * https://en.cppreference.com/w/cpp/header/atomic[`<atomic>`]: <<cpp17>> 32 "Atomic operations library"
-** link:userland/cpp/atomic.cpp[]
+
+===== atomic.cpp
+
+link:userland/cpp/atomic/[]
+
+In this set of examples, we exemplify various synchronization mechanisms, including assembly specific ones, by using the convenience of C++ multithreading:
+
+* link:userland/cpp/atomic/main.hpp[]: contains all the code which is then specialized in separated `.cpp` files with macros
+* link:userland/cpp/atomic/aarch64_add.cpp[]: non synchronized aarch64 inline assembly
+* link:userland/cpp/atomic/aarch64_ldaxr_stlxr.cpp[]: see: <<arm-ldxr-and-stxr-instructions>>
+* link:userland/cpp/atomic/aarch64_ldadd.cpp[]: synchronized aarch64 inline assembly with the <<arm-lse>> LDADD instruction
+* link:userland/cpp/atomic/fail.cpp[]: non synchronized C++ operator `++`
+* link:userland/cpp/atomic/mutex.cpp[]: synchronized `std::mutex`. `std;`
+* link:userland/cpp/atomic/std_atomic.cpp[]: synchronized `std::atomic_ulong`
+* link:userland/cpp/atomic/x86_64_inc.cpp[]: non synchronized x86_64 inline assembly
+* link:userland/cpp/atomic/x86_64_lock_inc.cpp[]: synchronized x86_64 inline assembly with the <<x86-lock-prefix>>
+
+All examples do exactly the same thing: span N threads and loop M times in each thread incrementing a global integer.
+
+For inputs large enough, the non-synchronized examples are extremely likely to produce "wrong" results, for example on <<p51>> Ubuntu 19.10 <<userland-setup-getting-started-natively,native>> with 2 threads and 10000 loops:
+
+....
+./fail.out 2 10000
+....
+
+we could get an output such as:
+
+....
+expect 20000
+global 12676
+....
+
+The actual value is much smaller, because the threads have often overwritten one another with older values.
+
+With `--optimization-level 3`, the result almost always equals that of a single thread, e.g.:
+
+....
+./build --optimization-level 3 --force-rebuild fail.cpp
+./fail.out 4 1000000
+....
+
+usually gives:
+
+....
+expect 40000
+global 10000
+....
+
+This is because now, instead of the horribly inefficient `-O0` assembly that reads `global` from memory every time, the code:
+
+* reads `global` to a register
+* increments the register
+* at end the end, the resulting value of each thread gets written back, overwriting each other with the increment of each thread
+
+The `-O0` code therefore mixes things up much more because it reads and write back to memory many many times.
+
+This can be easily seen from the disassembly with:
+
+....
+gdb -batch -ex "disassemble threadMain" fail.out
+....
+
+which gives for `-O0`:
+
+....
+   0x0000000000402656 <+0>:     endbr64
+   0x000000000040265a <+4>:     push   %rbp
+   0x000000000040265b <+5>:     mov    %rsp,%rbp
+   0x000000000040265e <+8>:     movq   $0x0,-0x8(%rbp)
+   0x0000000000402666 <+16>:    mov    0x5c2b(%rip),%rax        # 0x408298 <niters>
+   0x000000000040266d <+23>:    cmp    %rax,-0x8(%rbp)
+   0x0000000000402671 <+27>:    jae    0x40269b <threadMain()+69>
+   0x0000000000402673 <+29>:    mov    0x5c26(%rip),%rdx        # 0x4082a0 <global>
+   0x000000000040267a <+36>:    mov    -0x8(%rbp),%rax
+   0x000000000040267e <+40>:    mov    %rax,-0x8(%rbp)
+   0x0000000000402682 <+44>:    mov    0x5c17(%rip),%rax        # 0x4082a0 <global>
+   0x0000000000402689 <+51>:    add    $0x1,%rax
+   0x000000000040268d <+55>:    mov    %rax,0x5c0c(%rip)        # 0x4082a0 <global>
+   0x0000000000402694 <+62>:    addq   $0x1,-0x8(%rbp)
+   0x0000000000402699 <+67>:    jmp    0x402666 <threadMain()+16>
+   0x000000000040269b <+69>:    nop
+   0x000000000040269c <+70>:    pop    %rbp
+   0x000000000040269d <+71>:    retq
+....
+
+and for `-O3`:
+
+....
+   0x00000000004017f0 <+0>:     endbr64
+   0x00000000004017f4 <+4>:     mov    0x2a25(%rip),%rcx        # 0x404220 <niters>
+   0x00000000004017fb <+11>:    test   %rcx,%rcx
+   0x00000000004017fe <+14>:    je     0x401824 <threadMain()+52>
+   0x0000000000401800 <+16>:    mov    0x2a11(%rip),%rdx        # 0x404218 <global>
+   0x0000000000401807 <+23>:    xor    %eax,%eax
+   0x0000000000401809 <+25>:    nopl   0x0(%rax)
+   0x0000000000401810 <+32>:    add    $0x1,%rax
+   0x0000000000401814 <+36>:    add    $0x1,%rdx
+   0x0000000000401818 <+40>:    cmp    %rcx,%rax
+   0x000000000040181b <+43>:    jb     0x401810 <threadMain()+32>
+   0x000000000040181d <+45>:    mov    %rdx,0x29f4(%rip)        # 0x404218 <global>
+   0x0000000000401824 <+52>:    retq
+....
+
+We can now look into how `std::atomic` is implemented. In `-O3` the disassembly is:
+
+....
+   0x0000000000401770 <+0>:     endbr64
+   0x0000000000401774 <+4>:     cmpq   $0x0,0x297c(%rip)        # 0x4040f8 <niters>
+   0x000000000040177c <+12>:    je     0x401796 <threadMain()+38>
+   0x000000000040177e <+14>:    xor    %eax,%eax
+   0x0000000000401780 <+16>:    lock addq $0x1,0x2967(%rip)        # 0x4040f0 <global>
+   0x0000000000401789 <+25>:    add    $0x1,%rax
+   0x000000000040178d <+29>:    cmp    %rax,0x2964(%rip)        # 0x4040f8 <niters>
+   0x0000000000401794 <+36>:    ja     0x401780 <threadMain()+16>
+   0x0000000000401796 <+38>:    retq
+....
+
+so we clearly see that basically a `lock addq` is used to do an atomic read and write to memory every single time, just like in our other example link:userland/cpp/atomic/x86_64_lock_inc.cpp[].
+
+This setup can also be used to benchmark different synchronization mechanisms. For example, `std::mutex` was about 1.5x slower with two cores than `std::atomic`, presumably because it relies on the `futex` system call as can be seen from `strace -f -s999 -v` logs, while `std::atomic` uses just userland instructions: https://www.quora.com/How-does-std-atomic-work-in-C++11/answer/Ciro-Santilli Tested in `-O3` with:
+
+....
+time ./std_atomic.out 4 100000000
+time ./mutex.out 4 100000000
+....
+
+Related examples:
+
+* POSIX <<pthread-mutex>>
+* C11 link:userland/c/atomic.c[] documented at <<c-multithreading>>
+
+Bibliography:
+
+* https://stackoverflow.com/questions/31978324/what-exactly-is-stdatomic/58904448#58904448 "What exactly is std::atomic?"
+
+[[cpp-memory-order]]
+===== C++ std::memory_order
+
+https://stackoverflow.com/questions/12346487/what-do-each-memory-order-mean
+
+TODO let's understand that fully one day.
+
+[[cpp-parallel-algorithms]]
+===== C++ parallel algorithms
+
+https://stackoverflow.com/questions/51031060/are-c17-parallel-algorithms-implemented-already/55989883#55989883
+
+link:userland/cpp/parallel_sort.cpp[]
 
 [[cpp-standards]]
 ==== C++ standards
@@ -13871,13 +14259,72 @@ These links provide a clear overview of what POSIX is:
 * link:userland/posix/count.c[] illustrates `sleep()`
 * link:userland/posix/count_to.c[] minor variation of link:userland/posix/count.c[]
 
+==== fork
+
+POSIX' multiprocess API. Contrast with <<pthreads>> which are for threads.
+
+Example: link:userland/posix/fork.c[]
+
+Sample <<userland-setup-getting-started-natively,native userland output>> on Ubuntu 19.04 at 762cd8d601b7db06aa289c0fca7b40696299a868 + 1:
+
+....
+before fork before fork pid=13038 ppid=4805
+after fork after fork pid=13038 ppid=4805
+after (pid == 0) after (pid == 0) pid=13038 ppid=4805
+after fork after fork pid=13039 ppid=13038
+inside (pid == 0) inside (pid == 0) pid=13039 ppid=13038
+after wait after wait pid=13038 ppid=4805
+fork() return = 13039
+....
+
+Read the source comments and understand everything that is going on!
+
+===== Fork bomb
+
+https://en.wikipedia.org/wiki/Fork_bomb
+
+DANGER! Only run this on your host if you have saved all data you care about! Better run it inside an emulator! QEMU v4.0.0 <<user-mode-simulation,user mode>> is not safe enough either because it is very native does not limit guest memory, so it will still blow up the host!
+
+So without further ado, let's rock with either:
+
+....
+./run --eval-after './posix/fork_bomb.out danger'
+./run --eval-after './fork_bomb.sh danger'
+....
+
+Sources:
+
+* link:userland/posix/fork_bomb.c[]
+* link:rootfs_overlay/lkmc/fork_bomb.sh[]
+
+Outcome for the C version on LKMC 762cd8d601b7db06aa289c0fca7b40696299a868 + 1: after a few seconds of an unresponsive shell, we get a visit form the <<linux-out-of-memory-killer>>, and the system is restored!
+
 ==== pthreads
 
-POSIX' multithreading API. This was for a looong time the only "portable" multithreading alternative, until <<cpp-multithreading,C++11 finally added threads>>, thus also extending the portability to Windows.
+POSIX' multithreading API. Contrast with <<fork>> which is for processes.
+
+This was for a looong time the only "portable" multithreading alternative, until <<cpp-multithreading,C++11 finally added threads>>, thus also extending the portability to Windows.
 
 * link:userland/posix/pthread_count.c[]
 * link:userland/posix/pthread_deadlock.c[]
 * link:userland/posix/pthread_self.c[]
+
+[[pthread-mutex]]
+===== pthread_mutex
+
+link:userland/posix/pthread_count.c[] exemplifies the functions:
+
+* `pthread_mutex_lock`
+* pthread_mutex_unlock
+
+That example that the same interface as: <<atomic-cpp>>.
+There are no non-locking atomic types or atomic primitives in POSIX: http://stackoverflow.com/questions/1130018/unix-portable-atomic-operations
+
+`pthread_mutex_lock` and `pthread_mutex_unlock` and many other pthread functions already enforce cross thread memory synchronization:
+
+* https://stackoverflow.com/questions/78172/using-c-pthreads-do-shared-variables-need-to-be-volatile/58935671#58935671
+* https://stackoverflow.com/questions/3208060/does-guarding-a-variable-with-a-pthread-mutex-guarantee-its-also-not-cached
+* https://stackoverflow.com/questions/24137964/does-pthread-mutex-lock-contains-memory-fence-instruction
 
 ==== sysconf
 
@@ -13953,7 +14400,9 @@ The following sections are related to multithreading in userland:
 ** <<pthreads>>
 * ISA topics:
 ** <<x86-thread-synchronization-primitives>>
-** <<arm-lse>>
+** <<arm-thread-synchronization-primitives>>
+*** <<arm-ldxr-and-stxr-instructions>>
+*** <<arm-lse>>
 * emulator topics:
 ** <<qemu-user-mode-multithreading>>
 ** <<gem5-syscall-emulation-multithreading>>
@@ -13978,21 +14427,106 @@ Example: link:userland/c/memory_leak.c[]
 
 === Interpreted languages
 
-Maybe some day someone will use this setup to study the performance of interpreters:
+Maybe some day someone will use this setup to study the performance of interpreters.
 
-* <<node-js>>
+==== Python
 
-=== Node.js
+Build and install the interpreter on the target:
 
-Parent section: <<interpreted-languages>>.
+....
+./build-buildroot --config 'BR2_PACKAGE_PYTHON3=y'
+....
 
-Install the interpreter with:
+Usage from guest in full system:
+
+....
+./run
+....
+
+and then from there get an interactive shell with:
+
+....
+python3
+....
+
+or run an example with:
+
+....
+python3 python/hello.py
+....
+
+or:
+
+....
+./python/hello.py
+....
+
+<<user-mode-simulation>> interactive usage:
+
+....
+./run --userland "$(./getvar buildroot_target_dir)/usr/bin/python3"
+....
+
+Non-interactive usage:
+
+....
+./run --userland "$(./getvar buildroot_target_dir)/usr/bin/python3" --userland-args rootfs_overlay/lkmc/python/hello.py
+....
+
+LKMC 50ac89b779363774325c81157ec8b9a6bdb50a2f gem5 390a74f59934b85d91489f8a563450d8321b602da:
+
+....
+./run \
+  --emulator gem5 \
+  --userland "$(buildroot_target_dir)/usr/bin/python3" \
+  --userland-args rootfs_overlay/lkmc/python/hello.py \
+;
+....
+
+fails with:
+
+....
+fatal: Syscall 318 out of range
+....
+
+which corresponds to the glorious `inotify_rm_watch` syscall: https://github.com/torvalds/linux/blob/v5.4/arch/arm/tools/syscall.tbl#L335
+
+and aarch64:
+
+....
+./run \
+  --arch aarch64 \
+  --emulator gem5 \
+  --userland "$(./getvar --arch aarch64 buildroot_target_dir)/usr/bin/python3" \
+  --userland-args rootfs_overlay/lkmc/python/hello.py \
+;
+....
+
+fails with:
+
+....
+fatal: syscall unused#278 (#278) unimplemented.
+....
+
+which corresponds to the glorious `getrandom` syscall: https://github.com/torvalds/linux/blob/v4.17/include/uapi/asm-generic/unistd.h#L707
+
+Examples:
+
+* link:rootfs_overlay/lkmc/python/hello.py[]: hello world
+
+==== Node.js
+
+Host installation shown at: https://askubuntu.com/questions/594656/how-to-install-the-latest-versions-of-nodejs-and-npm/971612#971612
+
+Build and install the interpreter in Buildroot with:
 
 ....
 ./build-buildroot --config 'BR2_PACKAGE_NODEJS=y'
 ....
 
-TODO: broken as of 3c3deb14dc8d6511680595dc42cb627d5781746d + 1:
+Everything is then the same as the <<python>> interpreter setup, except that the executable name is now `node`!
+
+TODO: build broken as of LKMC 3c3deb14dc8d6511680595dc42cb627d5781746d + 1:
 
 ....
 ERROR: package host-nodejs installs executables without proper RPATH
@@ -14000,6 +14534,7 @@ ERROR: package host-nodejs installs executables without proper RPATH
 
 Examples:
 
+* link:rootfs_overlay/lkmc/nodejs/hello.js[]: hello world
 * String
 ** link:rootfs_overlay/lkmc/nodejs/alphanumeric.js[]: https://stackoverflow.com/questions/4444477/how-to-tell-if-a-string-contains-a-certain-character-in-javascript/58359106#58359106
 * `process`
@@ -14007,6 +14542,587 @@ Examples:
 * `fs`
 ** link:rootfs_overlay/lkmc/nodejs/file_write_read.js[]
 ** link:rootfs_overlay/lkmc/nodejs/read_stdin_to_string.js[] Question: https://stackoverflow.com/questions/30441025/read-all-text-from-stdin-to-a-string
+
+===== NPM
+
+https://en.wikipedia.org/wiki/Npm_(software)
+
+Some sample packages can be found under: link:npm[].
+
+Local testing of those packages can be done as shown at: https://stackoverflow.com/questions/59389027/how-to-interactively-test-the-executable-of-an-npm-node-js-package-during-develo
+
+The packages will also be published to the NPM registry, so you can also play with them as:
+
+....
+npm install cirosantilli-<directory-name>
+....
+
+====== NPM data-files
+
+Illustrates how to add extra non-code data files to an NPM package, and then use those files at runtime.
+
+https://stackoverflow.com/questions/31642477/how-to-publish-a-npm-package-with-distribution-files/59407033#59407033
+
+==== Java
+
+No OpenJDK package as of 2018.08: https://stackoverflow.com/questions/28874150/buildroot-with-jamvm-2-0-for-java-8/59290927#59290927 partly because their build system is shit like the rest of the project's setup.
+
+Unmerged patch at: http://lists.busybox.net/pipermail/buildroot/2018-February/213282.html
+
+There is a JamVM package though https://en.wikipedia.org/wiki/JamVM which is something Android started before moving to Dalvik,
+
+Maybe some day other <<android>> Java runtimes will also become compilable. Maybe, since Android is also shit.
+
+=== Algorithms
+
+link:userland/algorithm[]
+
+This is still work in progress and needs better automation, but is already a good sketch. Key missing features:
+
+* actually check that outputs are correct in `./test`
+* create a mechanism to run all or some selected hand coded inputs
+* create a mechanism to run generated input
+
+The idea was originally started at: https://github.com/cirosantilli/algorithm-cheat
+
+The key idea is that input / output pairs are present in human readable files generated either:
+
+* manually for small test inputs
+* with a Python script for larger randomized tests
+
+Test programs then:
+
+* read input from sdtin
+* produce output to stdout
+
+so that we can compare the output to the expected one.
+
+This way, tests can be reused across several implementations in different languages, emulating the many multi-language programming competition websites out there.
+
+For example, for a <<userland-setup-getting-started-natively,native run>> we can can run a set / sorting test:
+
+....
+cd userland/algorithm/set
+./build
+
+# Run with a small hand written test.
+./std_set.out < test_data/8.i > tmp.raw
+
+# Extract the output from the sorted stdout, which also
+# contained some timing information.
+./parse_output output < tmp.raw > tmp.o
+
+# Compare the output to the Expected one.
+cmp tmp.o test_data/8.e
+
+# Same but now with a large randomly generated input.
+./generate_io
+./std_set.out < tmp.i | ./parse_output output > tmp.o
+cmp tmp.o tmp.e
+....
+
+It is also possible to the algorithm tests normally from emulators in <<user-mode-simulation>> by setting stdin as explained at <<syscall-emulation-mode-program-stdin>>, e.g.:
+
+....
+./run --arch aarch64 -u userland/algorithm/set/std_set.cpp --stdin-file userland/algorithm/set/test_data/8.i
+....
+
+Sources:
+
+* link:userland/algorithm/set/generate_io[]
+* link:userland/algorithm/set/main.hpp[]
+* link:userland/algorithm/set/parse_output[]
+* link:userland/algorithm/set/std_set.cpp[]
+* link:userland/algorithm/set/test_data/8.e[]
+* link:userland/algorithm/set/test_data/8.i[]
+
+link:userland/algorithm/set/parse_output[] is needed because timing instrumentation measurements must be embedded in the program itself to allow:
+
+* discounting the input reading / output writing operations from the actual "read / write to / from memory algorithm" itself
+* measuring the evolution of the benchmark mid way, e.g. to see how the current container size affects insertion time: <<bst-vs-heap-vs-hashmap>>
+
+The following are also interesting Buildroot libraries that we could benchmark:
+
+* Armadillo `C++`: linear algebra
+* fftw: Fourier transform
+* Flann
+* GSL: various
+* liblinear
+* libspacialindex
+* libtommath
+* qhull
+
+These are good targets for <<gem5-run-benchmark,performance analysis with gem5>>, and there is some overlap between this section and <<benchmarks>>.
+
+==== BST vs heap vs hashmap
+
+TODO: move benchmark graph from link:userland/cpp/bst_vs_heap_vs_hashmap.cpp[] to link:userland/algorithm/set[].
+
+The following benchmark setup works both:
+
+* on host through timers + https://stackoverflow.com/questions/51952471/why-do-i-get-a-constant-instead-of-logarithmic-curve-for-an-insert-time-benchmar/51953081#51953081[granule]
+* gem5 with <<m5ops-instructions,dumpstats>>, which can get more precise results with `granule == 1`
+
+It has been used to answer:
+
+* BST vs heap: https://stackoverflow.com/questions/6147243/heap-vs-binary-search-tree-bst/29548834#29548834
+* `std::set`: https://stackoverflow.com/questions/2558153/what-is-the-underlying-data-structure-of-a-stl-set-in-c/51944661#51944661
+* `std::map`: https://stackoverflow.com/questions/18414579/what-data-structure-is-inside-stdmap-in-c/51945119#51945119
+
+To benchmark on the host, we do:
+
+....
+./build-userland-in-tree \
+  --force-rebuild \
+  --optimization-level 3 \
+  ./userland/cpp/bst_vs_heap_vs_hashmap.cpp \
+;
+./userland/cpp/bst_vs_heap_vs_hashmap.out 10000000 10000 0 | tee bst_vs_heap_vs_hashmap.dat
+gnuplot \
+  -e 'input_noext="bst_vs_heap_vs_hashmap"' \
+  -e 'heap_zoom_max=50' \
+  -e 'hashmap_zoom_max=400' \
+  ./bst-vs-heap-vs-hashmap.gnuplot \
+;
+xdg-open bst_vs_heap_vs_hashmap.tmp.png
+....
+
+The parameters `heap_zoom_max` and `hashmap_zoom_max` are chosen manually interactively to best showcase the regions of interest in those plots.
+
+To benchmark on gem5, we first build the benchmark with <<m5ops-instructions>> enabled, and then we run it and extract the stats:
+
+....
+./build-userland \
+  --arch x86_64 \
+  --ccflags='-DLKMC_M5OPS_ENABLE=1' \
+  --force-rebuild userland/cpp/bst_vs_heap_vs_hashmap.cpp \
+  --optimization-level 3 \
+;
+./run \
+  --arch x86_64 \
+  --emulator gem5 \
+  --userland userland/cpp/bst_vs_heap_vs_hashmap.cpp \
+  --userland-args='100000 1 0' \
+  -- \
+  --cpu-type=DerivO3CPU \
+  --caches \
+  --l2cache \
+  --l1d_size=32kB \
+  --l1i_size=32kB \
+  --l2_size=256kB \
+  --l3_size=20MB \
+;
+./bst-vs-heap-vs-hashmap-gem5-stats --arch x86_64 | tee bst_vs_heap_vs_hashmap_gem5.dat
+gnuplot \
+  -e 'input_noext="bst_vs_heap_vs_hashmap_gem5"' \
+  -e 'heap_zoom_max=500' \
+  -e 'hashmap_zoom_max=400' \
+  ./bst-vs-heap-vs-hashmap.gnuplot \
+;
+xdg-open bst_vs_heap_vs_hashmap_gem5.tmp.png
+....
+
+TODO: the gem5 simulation blows up on a tcmalloc allocation somewhere near 25k elements as of 3fdd83c2c58327d9714fa2347c724b78d7c05e2b + 1, likely linked to the extreme inefficiency of the stats collection?
+
+The cache sizes were chosen to match the host <<p51>> to improve the comparison. Ideally we should also use the same standard library.
+
+Note that this will take a long time, and will produce a humongous ~40Gb stats file as explained at: xref:gem5-only-dump-selected-stats[xrefstyle=full]
+
+Sources:
+
+* link:userland/cpp/bst_vs_heap_vs_hashmap.cpp[]
+* link:bst-vs-heap-vs-hashmap-gem5-stats[]
+* link:bst-vs-heap-vs-hashmap.gnuplot[]
+
+==== BLAS
+
+Buildroot supports it, which makes everything just trivial:
+
+....
+./build-buildroot --config 'BR2_PACKAGE_OPENBLAS=y'
+./build-userland --package openblas -- userland/libs/openblas/hello.c
+./run --eval-after './libs/openblas/hello.out; echo $?'
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Source: link:userland/libs/openblas/hello.c[]
+
+The test performs a general matrix multiplication:
+
+....
+    |  1.0 -3.0 |   |  1.0  2.0  1.0 |       |  0.5  0.5  0.5 |   |  11.0 - 9.0  5.0 |
+1 * |  2.0  4.0 | * | -3.0  4.0 -1.0 | + 2 * |  0.5  0.5  0.5 | = | - 9.0  21.0 -1.0 |
+    |  1.0 -1.0 |                            |  0.5  0.5  0.5 |   |   5.0 - 1.0  3.0 |
+....
+
+This can be deduced from the Fortran interfaces at
+
+....
+less "$(./getvar buildroot_build_build_dir)"/openblas-*/reference/dgemmf.f
+....
+
+which we can map to our call as:
+
+....
+C := alpha*op( A )*op( B ) + beta*C,
+SUBROUTINE DGEMMF(               TRANA,        TRANB,     M,N,K,  ALPHA,A,LDA,B,LDB,BETA,C,LDC)
+cblas_dgemm(      CblasColMajor, CblasNoTrans, CblasTrans,3,3,2  ,1,    A,3,  B,3,  2   ,C,3  );
+....
+
+==== Eigen
+
+Header only linear algebra library with a mainline Buildroot package:
+
+....
+./build-buildroot --config 'BR2_PACKAGE_EIGEN=y'
+./build-userland --package eigen -- userland/libs/eigen/hello.cpp
+....
+
+Just create an array and print it:
+
+....
+./run --eval-after './libs/eigen/hello.out'
+....
+
+Output:
+
+....
+  3  -1
+2.5 1.5
+....
+
+Source: link:userland/libs/eigen/hello.cpp[]
+
+This example just creates a matrix and prints it out.
+
+Tested on: https://github.com/cirosantilli/linux-kernel-module-cheat/commit/a4bdcf102c068762bb1ef26c591fcf71e5907525[a4bdcf102c068762bb1ef26c591fcf71e5907525]
+
+=== Benchmarks
+
+These are good targets for <<gem5-run-benchmark,performance analysis with gem5>>.
+
+TODO also consider the following:
+
+* http://www.cs.virginia.edu/stream/ref.html STREAM memory bandwidth benchmarks.
+* https://github.com/kozyraki/stamp transactional memory benchmarks
+
+==== Boost
+
+https://en.wikipedia.org/wiki/Boost_(C%2B%2B_libraries)
+
+link:userland/libs/boost[]
+
+* link:userland/libs/boost/bimap.cpp[]
+
+==== Dhrystone
+
+https://en.wikipedia.org/wiki/Dhrystone
+
+Created in the 80's, it is not a representative measure of performance in modern computers anymore. It has mostly been replaced by https://en.wikipedia.org/wiki/SPECint[SPEC], which is... closed source! Unbelievable.
+
+Dhrystone is very simple:
+
+* there is one loop in the `dhry_1.c` main function that gets executed N times
+* that loop calls 9 short functions called `Proc_0` to `Proc_9`, most of which are defined in `dhry_1.c`, and a few others in `dhry_2.c`
+
+The benchmark is single-threaded.
+
+After a quick look at it, Dhrystone in `-O3` is is very likely completely CPU bound, as there are no loops over variable sized arrays, except for some dummy ones that only run once. It just does a bunch of operations on local and global C variables, which are very likely to be inlined and treated fully in registers until the final write back, or to fit entirely in cache. TODO confirm with some kind of measurement. The benchmark also makes no syscalls except for measuring time and reporting results.
+
+<<buildroot>> has a `dhrystone` package, but because it is so interesting to us, we decided to also build it ourselves, which allows things like static and baremetal compilation more easily.
+
+Build and run on QEMU <<user-mode-simulation>>:
+
+....
+git submodule update --init submodules/dhrystone
+./build-dhrystone --optimization-level 3
+./run --userland "$(./getvar userland_build_dir)/submodules/dhrystone/dhrystone"
+....
+
+TODO automate run more nicely to dispense `getvar`.
+
+Increase the number of loops to try and reach more meaningful results:
+
+....
+./run --userland "$(./getvar userland_build_dir)/submodules/dhrystone/dhrystone" --userland-args 100000000
+....
+
+Build and run on gem5 user mode:
+
+....
+./build-dhrystone --optimization-level 3
+./run --emulator gem5 --userland "$(./getvar userland_build_dir)/submodules/dhrystone/dhrystone"
+....
+
+Run natively on the host:
+
+....
+./build-dhrystone --host
+"$(./getvar --host userland_build_dir)/submodules/dhrystone/dhrystone"
+....
+
+Build for <<baremetal>> execution and run it in baremetal QEMU. TODO: fix the build, just need to factor out all run arguments from link:build-baremetal[] into link:common.py[] and it should just work, no missing syscalls.
+
+....
+# Build our Newlib stubs.
+./build-baremetal --arch aarch64
+./build-dhrystone --arch aarch64 --mode baremetal
+./run --arch aarch64 --baremetal "$(./getvar baremetal_build_dir)/submodules/dhrystone/dhrystone"
+....
+
+If you really want the Buildroot package for some reason, build it with:
+
+....
+./build-buildroot --config 'BR2_PACKAGE_DHRYSTONE=y'
+....
+
+and run inside the guest from `PATH` with:
+
+....
+dhrystone
+....
+
+==== STREAM benchmark
+
+http://www.cs.virginia.edu/stream/ref.html
+
+Very simple memory width benchmark with one C and one Fortran version, originally published in 1991, and the latest version at the time of writing is from 2013.
+
+Its operation is very simple: fork one thread for each CPU in the system (using OpenMP) and do the following four array operations (4 separate loops of individual operations):
+
+....
+/* Copy. */
+times[0 * ntimes + k] = mysecond();
+#pragma omp parallel for
+for (j=0; j<stream_array_size; j++)
+    c[j] = a[j];
+times[0 * ntimes + k] = mysecond() - times[0 * ntimes + k];
+
+/* Scale. */
+times[1 * ntimes + k] = mysecond();
+#pragma omp parallel for
+for (j=0; j<stream_array_size; j++)
+    b[j] = scalar*c[j];
+times[1 * ntimes + k] = mysecond() - times[1 * ntimes + k];
+
+/* Add. */
+times[2 * ntimes + k] = mysecond();
+#pragma omp parallel for
+for (j=0; j<stream_array_size; j++)
+    c[j] = a[j]+b[j];
+times[2 * ntimes + k] = mysecond() - times[2 * ntimes + k];
+
+/* Triad. */
+times[3 * ntimes + k] = mysecond();
+#pragma omp parallel for
+for (j=0; j<stream_array_size; j++)
+    a[j] = b[j]+scalar*c[j];
+times[3 * ntimes + k] = mysecond() - times[3 * ntimes + k];
+}
+....
+
+See also: https://stackoverflow.com/questions/56086993/what-does-stream-memory-bandwidth-benchmark-really-measure
+
+The LKMC usage of STREAM is analogous to that of <<dhrystone>>. Build and run on QEMU <<user-mode-simulation>>:
+
+....
+git submodule update --init submodules/stream-benchmark
+./build-stream --optimization-level 3
+./run --userland "$(./getvar userland_build_dir)/submodules/stream-benchmark/stream_c.exe"
+....
+
+Decrease the benchmark size and the retry count to finish simulation faster, but possibly have a less representative result:
+
+....
+./run --userland "$(./getvar userland_build_dir)/submodules/stream-benchmark/stream_c.exe" --userland-args '100 2'
+....
+
+Build and run on gem5 user mode:
+
+....
+./build-stream --optimization-level 3
+./run --emulator gem5 --userland "$(./getvar userland_build_dir)/submodules/stream-benchmark/stream_c.exe" --userland-args '1000 2'
+....
+
+==== PARSEC benchmark
+
+We have ported parts of the http://parsec.cs.princeton.edu[PARSEC benchmark] for cross compilation at: https://github.com/cirosantilli/parsec-benchmark See the documentation on that repo to find out which benchmarks have been ported. Some of the benchmarks were are segfaulting, they are documented in that repo.
+
+There are two ways to run PARSEC with this repo:
+
+* <<parsec-benchmark-without-parsecmgmt,without `pasecmgmt`>>, most likely what you want
+* <<parsec-benchmark-with-parsecmgmt,with `pasecmgmt`>>
+
+===== PARSEC benchmark without parsecmgmt
+
+....
+./build --arch arm --download-dependencies gem5-buildroot parsec-benchmark
+./build-buildroot --arch arm --config 'BR2_PACKAGE_PARSEC_BENCHMARK=y'
+./run --arch arm --emulator gem5
+....
+
+Once inside the guest, launch one of the `test` input sized benchmarks manually as in:
+
+....
+cd /parsec/ext/splash2x/apps/fmm/run
+../inst/arm-linux.gcc/bin/fmm 1 < input_1
+....
+
+To find run out how to run many of the benchmarks, have a look at the `test.sh` script of the `parse-benchmark` repo.
+
+From the guest, you can also run it as:
+
+....
+cd /parsec
+./test.sh
+....
+
+but this might be a bit time consuming in gem5.
+
+===== PARSEC change the input size
+
+Running a benchmark of a size different than `test`, e.g. `simsmall`, requires a rebuild with:
+
+....
+./build-buildroot \
+  --arch arm \
+  --config 'BR2_PACKAGE_PARSEC_BENCHMARK=y' \
+  --config 'BR2_PACKAGE_PARSEC_BENCHMARK_INPUT_SIZE="simsmall"' \
+  -- parsec_benchmark-reconfigure \
+;
+....
+
+Large input may also require tweaking:
+
+* <<br2-target-rootfs-ext2-size>> if the unpacked inputs are large
+* <<memory-size>>, unless you want to meet the OOM killer, which is admittedly kind of fun
+
+`test.sh` only contains the run commands for the `test` size, and cannot be used for `simsmall`.
+
+The easiest thing to do, is to https://superuser.com/questions/231002/how-can-i-search-within-the-output-buffer-of-a-tmux-shell/1253137#1253137[scroll up on the host shell] after the build, and look for a line of type:
+
+....
+Running /root/linux-kernel-module-cheat/out/aarch64/buildroot/build/parsec-benchmark-custom/ext/splash2x/apps/ocean_ncp/inst/aarch64-linux.gcc/bin/ocean_ncp -n2050 -p1 -e1e-07 -r20000 -t28800
+....
+
+and then tweak the command found in `test.sh` accordingly.
+
+Yes, we do run the benchmarks on host just to unpack / generate inputs. They are expected fail to run since they were build for the guest instead of host, including for x86_64 guest which has a different interpreter than the host's (see `file myexecutable`).
+
+The rebuild is required because we unpack input files on the host.
+
+Separating input sizes also allows to create smaller images when only running the smaller benchmarks.
+
+This limitation exists because `parsecmgmt` generates the input files just before running via the Bash scripts, but we can't run `parsecmgmt` on gem5 as it is too slow!
+
+One option would be to do that inside the guest with QEMU.
+
+Also, we can't generate all input sizes at once, because many of them have the same name and would overwrite one another...
+
+PARSEC simply wasn't designed with non native machines in mind...
+
+===== PARSEC benchmark with parsecmgmt
+
+Most users won't want to use this method because:
+
+* running the `parsecmgmt` Bash scripts takes forever before it ever starts running the actual benchmarks on gem5
++
+Running on QEMU is feasible, but not the main use case, since QEMU cannot be used for performance measurements
+* it requires putting the full `.tar` inputs on the guest, which makes the image twice as large (1x for the `.tar`, 1x for the unpacked input files)
+
+It would be awesome if it were possible to use this method, since this is what Parsec supports officially, and so:
+
+* you don't have to dig into what raw command to run
+* there is an easy way to run all the benchmarks in one go to test them out
+* you can just run any of the benchmarks that you want
+
+but it simply is not feasible in gem5 because it takes too long.
+
+If you still want to run this, try it out with:
+
+....
+./build-buildroot \
+  --arch aarch64 \
+  --config 'BR2_PACKAGE_PARSEC_BENCHMARK=y' \
+  --config 'BR2_PACKAGE_PARSEC_BENCHMARK_PARSECMGMT=y' \
+  --config 'BR2_TARGET_ROOTFS_EXT2_SIZE="3G"' \
+  -- parsec_benchmark-reconfigure \
+;
+....
+
+And then you can run it just as you would on the host:
+
+....
+cd /parsec/
+bash
+. env.sh
+parsecmgmt -a run -p splash2x.fmm -i test
+....
+
+===== PARSEC uninstall
+
+If you want to remove PARSEC later, Buildroot doesn't provide an automated package removal mechanism as mentioned at: xref:remove-buildroot-packages[xrefstyle=full], but the following procedure should be satisfactory:
+
+....
+rm -rf \
+  "$(./getvar buildroot_download_dir)"/parsec-* \
+  "$(./getvar buildroot_build_dir)"/build/parsec-* \
+  "$(./getvar buildroot_build_dir)"/build/packages-file-list.txt \
+  "$(./getvar buildroot_build_dir)"/images/rootfs.* \
+  "$(./getvar buildroot_build_dir)"/target/parsec-* \
+;
+./build-buildroot --arch arm
+....
+
+===== PARSEC benchmark hacking
+
+If you end up going inside link:submodules/parsec-benchmark[] to hack up the benchmark (you will!), these tips will be helpful.
+
+Buildroot was not designed to deal with large images, and currently cross rebuilds are a bit slow, due to some image generation and validation steps.
+
+A few workarounds are:
+
+* develop in host first as much as you can. Our PARSEC fork supports it.
++
+If you do this, don't forget to do a:
++
+....
+cd "$(./getvar parsec_source_dir)"
+git clean -xdf .
+....
+before going for the cross compile build.
++
+* patch Buildroot to work well, and keep cross compiling all the way. This should be totally viable, and we should do it.
++
+Don't forget to explicitly rebuild PARSEC with:
++
+....
+./build-buildroot \
+  --arch arm \
+  --config 'BR2_PACKAGE_PARSEC_BENCHMARK=y' \
+  -- parsec_benchmark-reconfigure \
+;
+....
++
+You may also want to test if your patches are still functionally correct inside of QEMU first, which is a faster emulator.
+* sell your soul, and compile natively inside the guest. We won't do this, not only because it is evil, but also because Buildroot explicitly does not support it: https://buildroot.org/downloads/manual/manual.html#faq-no-compiler-on-target ARM employees have been known to do this: https://github.com/arm-university/arm-gem5-rsk/blob/aa3b51b175a0f3b6e75c9c856092ae0c8f2a7cdc/parsec_patches/qemu-patch.diff
+
+[[userland-libs-directory]]
+==== userland/libs directory
+
+Tests under link:userland/libs[] require certain optional libraries to be installed on the target, and are not built or tested by default, you must enable them with either:
+
+....
+--package <package>
+--package-all
+....
+
+See for example <<blas>>.
 
 === Userland content bibliography
 
@@ -14202,7 +15318,7 @@ Then it is just a huge copy paste of infinite boring details:
 * <<x86-simd>>
 * <<arm-simd>>
 
-To debug these instructoins, you can see the register values in GDB with:
+To debug these instructions, you can see the register values in GDB with:
 
 ....
 info registers float
@@ -14311,9 +15427,57 @@ This is analogous to <<baremetal-gdb-step-debug,step debugging baremetal example
 
 Assembly examples under `nostartfiles` directories can use the standard library, but they don't use the pre-`main` boilerplate and start directly at our explicitly given `_start`:
 
-* link:userland/arch/aarch64/freestanding/[]
+* link:userland/arch/x86_64/nostartfiles/[]
+* link:userland/arch/aarch64/nostartfiles/[]
 
 I'm not sure how much stdlib functionality is supposed to work without the pre-main stuff, but I guess we'll just have to find out!
+
+Was going to ask the following markdown question, but I noticed half way that:
+
+* without `-static`, I see a bunch of dynamic loader instructions, so not much is gained
+* with `-static`, the program segfaults, including on the host with stack:
++
+....
+#0  0x0000000000429625 in _IO_cleanup ()
+#1  0x0000000000400c72 in __run_exit_handlers ()
+#2  0x0000000000400caa in exit ()
+#3  0x0000000000400a01 in _start () at exit.S:4
+....
+
+so I didn't really have a good question.
+
+The Markdown question that was almost asked:
+
+....
+When working in emulators, I often want to keep my workloads as small as possible to more easily study instruction traces and reproduce bugs.
+
+One of the ways I often want to do that, especially when doing [user mode simulations](https://wiki.debian.org/QemuUserEmulation), is by not running [the code that normally runs before main](https://stackoverflow.com/questions/53570678/what-happens-before-main-in-c) so that I can start directly in the instructions of interest that I control myself, which can be achieved with the `gcc -nostartfiles` option and by starting the program directly at `_start`.
+
+Here is a tiny example that calls just `exit` from the C standard library:
+
+main.S
+
+```
+.global _start
+_start:
+    mov $0, %rdi
+    call exit
+
+```
+
+Compile and run with:
+
+```
+gcc -ggdb3 -nostartfiles -static -o exit.out exit.S
+qemu-x86_64 -d in_asm exit.out
+```
+
+However, for programming convenience, and to potentially keep my examples more OS portable, I would like to avoid making raw system calls, which would of course work, by using C standard library functions instead.
+
+But I'm afraid that some of those C standard library functions will fail in subtle ways because I have skipped required initialization steps that would normally happen before `main`.
+
+Is it any easy to determine which functions I can use or not, in case there are any that I can't use?
+....
 
 === GCC inline assembly
 
@@ -14331,6 +15495,7 @@ Examples under `arch/<arch>/c/` directories show to how use inline assembly from
 * aarch64
 ** link:userland/arch/aarch64/inline_asm/earlyclobber.c[]
 ** link:userland/arch/aarch64/inline_asm/inc.c[]
+** link:userland/arch/aarch64/inline_asm/inc_32.c[]: how to use 32-bit `w` registers in aarch64. We have to add `w` to the `%` as in `%w[io]` instead of `%[io]`
 ** link:userland/arch/aarch64/inline_asm/multiline.cpp[]
 
 ==== GCC inline assembly register variables
@@ -14471,6 +15636,43 @@ Questions about the C inline assembly examples:
 
 * x86_64: https://stackoverflow.com/questions/9506353/how-to-invoke-a-system-call-via-sysenter-in-inline-assembly/54956854#54956854
 * ARM: https://stackoverflow.com/questions/21729497/doing-a-syscall-without-libc-using-arm-inline-assembly
+
+==== futex system call
+
+This is how threads either:
+
+* request the kernel to sleep until they are woken up by other threads
+* request the kernel to wake up other threads that are waiting on a given futex
+
+This syscall is rarely used on its own, and there isn't even a glibc wrapper for it: you almost always just want to use the <<pthreads>> or <<cpp-multithreading>> wrappers which use it for you to <<userland-mutex-implementation,implement higher level constructs like mutexes>>.
+
+Futexes are bit complicated, because in order to achieve their efficiency, basically nothing is guaranteed: the wait might not wait, and the wakes might not wake.
+
+So you are just basically forced to use atomic operations on the futex memory address in order to be sure of anything (we encourage you to try without :-)).
+
+Minimal examples:
+
+* link:lkmc/futex.h[]: our futex wrapper
+* link:userland/linux/futex.c[]: minimal example. It:
+** first spawns a child
+** then sleeps for 1 second and wakes up the futex if anyone is sleeping on it
+** the child sleeps on the futex if it reaches that futex before the end of the parent's sleep (likely). If it did reach that `FUTEX_WAIT` there, it gets awoken by the parent.
++
+So what you see is:
++
+....
+main start
+child start
+[wait 1s]
+parent after sleep
+child after parent sleep
+....
+
+===== Userland mutex implementation
+
+The best article to understand spinlocks is: https://eli.thegreenplace.net/2018/basics-of-futexes/
+
+The example in `man futex` is also a must.
 
 === Linux calling conventions
 
@@ -15303,7 +16505,7 @@ TODO: review this section, make a more controlled userland experiment with <<m5o
 Let's have some fun and try to correlate the <<gem5-m5out-stats-txt-file>> `system.cpu.numCycles` cycle count with the https://en.wikipedia.org/wiki/Time_Stamp_Counter[x86 RDTSC instruction] that is supposed to do the same thing:
 
 ....
-./build-userland --static userland/arch/x86_64/inline_asm/rdtsc.S
+./build-userland userland/arch/x86_64/inline_asm/rdtsc.S
 ./run --eval './arch/x86_64/rdtsc.out;m5 exit;' --emulator gem5
 ./gem5-stat
 ....
@@ -15346,7 +16548,6 @@ produces:
 0x00000001
 ....
 
-
 There is also the RDPID instruction that reads just the processor ID, but it appears to be very new for QEMU 4.0.0 or <<p51>>, as it fails with SIGILL on both.
 
 Bibliography: https://stackoverflow.com/questions/22310028/is-there-an-x86-instruction-to-tell-which-core-the-instruction-is-being-run-on/56622112#56622112
@@ -15363,7 +16564,7 @@ TODO We didn't manage to find a working ARM analogue to <<x86-rdtsc-instruction>
 
 ==== x86 LOCK prefix
 
-Inline assembly example at: link:userland/cpp/atomic.cpp[]
+Inline assembly example at: link:userland/cpp/atomic/x86_64_lock_inc.cpp[], see also: <<atomic-cpp>>.
 
 Ensures that memory modifications are visible across all CPUs, which is fundamental for thread synchronization.
 
@@ -15427,7 +16628,7 @@ It competes with <<x86-userland-assembly>> because its implementations are desig
 
 ARM is generally considered a RISC instruction set, although there are some more complex instructions which would not generally be classified as purely RISC.
 
-ARM is developed by the British funded company ARM Holdings: https://en.wikipedia.org/wiki/Arm_Holdings which originated as a joint venture between Acorn Computers, Apple  and VLSI Technology in 1990.
+ARM is developed by the British funded company ARM Holdings: https://en.wikipedia.org/wiki/Arm_Holdings which originated as a joint venture between Acorn Computers, Apple and VLSI Technology in 1990.
 
 ARM Holdings was bought by the Japanese giant SoftBank in 2016.
 
@@ -16322,7 +17523,7 @@ Also keep in mind that fused multiply add is FMADD.
 
 Examples at: xref:simd-assembly[xrefstyle=full]
 
-===== ARMv8 aarch64 ld2 instruction
+===== ARMv8 aarch64 LD2 instruction
 
 Example: link:userland/arch/aarch64/ld2.S[]
 
@@ -16384,9 +17585,9 @@ gem5 covered at: https://stackoverflow.com/questions/57692765/how-to-change-the-
 It is fun to observe this directly with the <<arm-sve-vaddl-instruction>> in SE:
 
 ....
-./run --arch aarch64 --userland userland/arch/aarch64/sve_addvl.S --static --emulator gem5 -- --param 'system.cpu[:].isa[:].sve_vl_se = 1'
-./run --arch aarch64 --userland userland/arch/aarch64/sve_addvl.S --static --emulator gem5 -- --param 'system.cpu[:].isa[:].sve_vl_se = 2'
-./run --arch aarch64 --userland userland/arch/aarch64/sve_addvl.S --static --emulator gem5 -- --param 'system.cpu[:].isa[:].sve_vl_se = 4'
+./run --arch aarch64 --userland userland/arch/aarch64/sve_addvl.S --emulator gem5 -- --param 'system.cpu[:].isa[:].sve_vl_se = 1'
+./run --arch aarch64 --userland userland/arch/aarch64/sve_addvl.S --emulator gem5 -- --param 'system.cpu[:].isa[:].sve_vl_se = 2'
+./run --arch aarch64 --userland userland/arch/aarch64/sve_addvl.S --emulator gem5 -- --param 'system.cpu[:].isa[:].sve_vl_se = 4'
 ....
 
 which consecutively:
@@ -16425,23 +17626,54 @@ We then download the zip from: https://developer.arm.com/docs/ddi0584/latest/arm
 
 That document then describes the SVE instructions and registers.
 
+=== ARM thread synchronization primitives
+
+Parent section: <<userland-multithreading>>.
+
+==== ARM LDXR and STXR instructions
+
+Parent section: <<atomic-cpp>>
+
+link:userland/cpp/atomic/aarch64_ldaxr_stlxr.cpp[]
+
+LDXR and STXR vs LDAXR and STLXR: https://stackoverflow.com/questions/21535058/arm64-ldxr-stxr-vs-ldaxr-stlxr TODO understand better and example.
+
+LDXR and STXR for a so-called "Load-link/store-conditional" (LLSC) pattern: https://en.wikipedia.org/wiki/Load-link/store-conditional which appears in many RISC ISAs.
+
+This pattern makes it such that basically:
+
+* LDXR marks an address for exclusive access by the current CPU
+* STXR:
+** marks the address as not being exclusive to other CPUs that may have done LDXR before
+** loads fine if the address is still marked as exclusive, and stores 0 on a third register for success
+** fails to load if the address is not, and stores 1 on the third register for failure
+
+In case of failure, we just have to loop back to just before the LDXR and try again.
+
+This is therefore basically a spinlock and should only be used to cover very short critical sections such as atomic increments.
+
+C++ `std::atomic` uses this for increments before v8.1 <<arm-lse>>: https://stackoverflow.com/questions/56810/how-do-i-start-threads-in-plain-c/52453291#52453291
+
+[[arm-lse]]
+==== ARM Large System Extensions (LSE)
+
+Set of atomic and synchronization primitives added in <<armv8-1-architecture-extension>>.
+
+Documented at <<armarm8-db>> "ARMv8.1-LSE, ARMv8.1 Large System Extensions"
+
+* LDADD: link:userland/cpp/atomic/aarch64_ldadd.cpp[], see also: <<atomic-cpp>>. Kernel inspiration: https://github.com/torvalds/linux/blob/v5.4/arch/arm64/include/asm/atomic_lse.h#L56
+
+Bibliography:
+
+* https://preshing.com/20120710/memory-barriers-are-like-source-control-operations/
+
 === ARMv8 architecture extensions
 
 ==== ARMv8.1 architecture extension
 
 <<armarm8-db>> A1.7.3 "The ARMv8.1 architecture extension"
 
-[[arm-lse]]
-===== ARM Large System Extensions (LSE)
-
-<<armarm8-db>> "ARMv8.1-LSE, ARMv8.1 Large System Extensions"
-
-* LDADD: link:userland/cpp/atomic.cpp[]
-
-Bibliography:
-
-* https://stackoverflow.com/questions/21535058/arm64-ldxr-stxr-vs-ldaxr-stlxr
-* https://preshing.com/20120710/memory-barriers-are-like-source-control-operations/
+* <<arm-lse>>
 
 === ARM assembly bibliography
 
@@ -17225,8 +18457,6 @@ IN: main
 
 which does an `eret` and jumps back to 0x4000209c, which is 4 bytes and therefore one instruction after where SVC was taken at 0x40002098.
 
-In QEMU,  and then we just continue running from the exception handler address.
-
 On the terminal output, we observe the initial values of:
 
 * DAIF: 0x3c0, i.e. 4 bits (6 to 9) set to 1, which means that exceptions are masked for each exception type: Synchronous, System error, IRQ and FIQ.
@@ -17354,7 +18584,7 @@ Exception Link Register.
 
 See the example at: xref:arm-svc-instruction[xrefstyle=full]
 
-==== ARM multicore
+==== ARM baremetal multicore
 
 Examples:
 
@@ -17411,12 +18641,45 @@ Bibliography: https://stackoverflow.com/questions/980999/what-does-multicore-ass
 
 The WFE and SEV instructions are just hints: a compliant implementation can treat them as NOPs.
 
+Concrete examples of the instruction can be seen at:
+
+* link:userland/arch/aarch64/nostartfiles/wfe.S[]
+* link:userland/arch/aarch64/freestanding/linux/wfe.S[]
+* link:userland/arch/aarch64/freestanding/linux/sevl_wfe.S[]
+* link:userland/arch/aarch64/freestanding/linux/wfe_wfe.S[]: run WFE twice, because gem5 390a74f59934b85d91489f8a563450d8321b602d does not sleep on the first, see also: <<gem5-arm-wfe>>
+* link:baremetal/arch/aarch64/no_bootloader/wfe_loop.S[], see: <<gem5-simulate-limit-reached>>
+* link:userland/arch/aarch64/inline_asm/wfe_sev.cpp[]: one Linux thread runs WFE and the other runs SEV to wake it up
+* <<arm-baremetal-multicore>> shows baremetal examples where WFE sleeps and another thread wakes it up:
+** link:baremetal/arch/arm/multicore.c[]
+** link:baremetal/arch/aarch64/multicore.c[]
+** link:baremetal/arch/arm/no_bootloader/multicore_asm.S[]
+
 However, likely no implementation likely does (TODO confirm), since:
 
-* WFE puts the core in a low power mode
+* WFE is intended to put the core in a low power mode
 * SEV wakes up cores from a low power mode
 
 and power consumption is key in ARM applications.
+
+Quotes for the above <<armarm8-db>> G1.18.1 "Wait For Event and Send Event":
+
+____
+The following events are WFE wake-up events:
+
+\[...]
+
+* An event caused by the clearing of the global monitor associated with the PE
+____
+
+and <<armarm8-db>> E2.9.6 "Use of WFE and SEV instructions by spin-locks":
+
+____
+ARMv8 provides Wait For Event, Send Event, and Send Event Local instructions, WFE, SEV, SEVL, that can assist with reducing power consumption and bus contention caused by PEs repeatedly attempting to obtain a spin-lock. These instructions can be used at the application level, but a complete understanding of what they do depends on a system level understanding of exceptions. They are described in Wait For Event and Send Event on page G1-5308. However, in ARMv8, when the global monitor for a PE changes from Exclusive Access state to Open Access state, an event is generated.
+
+Note This is equivalent to issuing an SEVL instruction on the PE for which the monitor state has changed. It removes the need for spinlock code to include an SEV instruction after clearing a spinlock.
+____
+
+The recommended ARMv8 spinlock implementation is shown at http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dht0008a/ch01s03s02.html where `WAIT_FOR_UPDATE` is as explained in that section a macro that expands to WFE. TODO SEV is used explicitly in those examples via SIGNAL_UPDATE, where is the example that shows how SEV can be eliminated due to implicit monitor signals?
 
 In QEMU 3.0.0, SEV is a NOPs, and WFE might be, but I'm not sure, see: https://github.com/qemu/qemu/blob/v3.0.0/target/arm/translate-a64.c#L1423
 
@@ -17444,7 +18707,7 @@ TODO: what does the WFE code do? How can it not be a NOP if SEV is a NOP? https:
  */
 ....
 
-For gem5 however, if we comment out the SVE instruction, then it actually exits with `simulate() limit reached`, so the CPU truly never wakes up, which is a more realistic behaviour.
+For gem5 however, if we comment out the SVE instruction, then it actually exits with `simulate() limit reached`, so the CPU truly never wakes up, which is a more realistic behaviour, since gem5 is more focused on simulating a realistic microarchitecture and power consumption.
 
 The following Raspberry Pi bibliography helped us get this sample up and running:
 
@@ -17452,6 +18715,162 @@ The following Raspberry Pi bibliography helped us get this sample up and running
 * https://github.com/dwelch67/raspberrypi/tree/a09771a1d5a0b53d8e7a461948dc226c5467aeec/multi00
 * https://github.com/LdB-ECM/Raspberry-Pi/blob/3b628a2c113b3997ffdb408db03093b2953e4961/Multicore/SmartStart64.S
 * https://github.com/LdB-ECM/Raspberry-Pi/blob/3b628a2c113b3997ffdb408db03093b2953e4961/Multicore/SmartStart32.S
+
+For how userland spinlocks and mutexes are implemented see <<userland-mutex-implementation>>.
+
+====== ARM WFE global monitor events
+
+Examples:
+
+* link:userland/arch/aarch64/inline_asm/wfe_ldxr_stxr.cpp[]
+* link:userland/arch/aarch64/inline_asm/wfe_ldxr_str.cpp[]
+
+SEV is not the only thing that can wake up a WFE, it is only an explicit software way to do it.
+
+Notably, global monitor operations on memory accesses of regions marked by <<arm-ldxr-and-stxr-instructions,LDAXR and STLXR instructions>> can also wake up a WFE sleeping core.
+
+This is done to allow spinlocks opens to automatically wake up WFE sleeping cores at free time without the need for a explicit SEV.
+
+In the shown in the `wfe_ldxr_stxr.cpp` example, which can only terminate in gem5 user mode simulation because due to this event.
+
+Note that that program still terminates when running on top of the Linux kernel as explained at: <<wfe-from-userland>>.
+
+====== WFE from userland
+
+WFE and SEV are usable from userland, and are part of an efficient spinlock implementation (which userland should arguably stay away from and rather use the <<futex-system-call>> which allow for non busy sleep instead), which maybe is not something that userland should ever tho and just stick to mutexes?
+
+There is a control bit `SCTLR_EL1.nTWE` that determines if WFE is trapped or not, i.e.: is that bit is set, then it is trapped and EL0 execution raises an exception in EL1.
+
+Linux v5.2.1 does not set `SCTLR_EL1.nTWE` however, tested with <<gem5-tracing>> with `--trace ExecAll,Failts` and the <<dump-regs,dump_regs kernel module>> in a full system simulation.
+
+The kernel seems to setup nTWE at:
+
+include/asm/sysreg.h
+
+....
+#define SCTLR_EL1_SET	(SCTLR_ELx_M    | SCTLR_ELx_C    | SCTLR_ELx_SA   |\
+             ...
+			 SCTLR_EL1_NTWE | SCTLR_ELx_IESB | SCTLR_EL1_SPAN |\
+....
+
+and:
+
+mm/proc.S
+
+....
+	/*
+	 * Prepare SCTLR
+	 */
+	mov_q	x0, SCTLR_EL1_SET
+....
+
+To reduce the number of instructions from our trace, first we boot, and then we restore a checkpoint after boot with <<gem5-restore-new-script>> with a restore command that runs link:userland/arch/aarch64/freestanding/linux/wfe_wfe.S[]:
+
+....
+./run --arch aarch64 --emulator gem5 --gem5-worktree master --gem5-restore 1 --gem5-readfile 'arch/aarch64/freestanding/linux/wfe_wfe.out' --trace ExecAll,Faults,FmtFlag,Thread
+....
+
+On the traces, we search for `wfe`, and there are just two hits, so they must be our instructions!
+
+The traces then look like this at LKMC 777b7cbbd1d553baf2be9bc2075102be740054dd:
+
+....
+112285501668497000: Thread: system.cpu: suspend contextId 0
+112285501668497000: ExecEnable: system.cpu: A0 T0 : 0x400078    :   wfe                      : IntAlu :  D=0x0000000000000000  flags=(IsSerializeAfter|IsNonSpeculative|IsQuiesce|IsUnverifiable)
+112285501668497501: Thread: system.cpu: activate contextId 0
+112285501668498000: Thread: system.cpu: suspend contextId 0
+112285501668498000: ExecEnable: system.cpu: A0 T0 : 0x40007c    :   wfe                      : IntAlu :  D=0x0000000000000000  flags=(IsSerializeAfter|IsNonSpeculative|IsQuiesce|IsUnverifiable)
+112285501909320284: Thread: system.cpu: activate contextId 0
+112285501909320500: Faults: IRQ: Invoking Fault (AArch64 target EL):IRQ cpsr:0x4003c5 PC:0x400080 elr:0x400080 newVec: 0xffffff8010082480 
+112285501909320500: ExecEnable: system.cpu: A0 T0 : @vectors+1152    :   nop                      : IntAlu :   flags=(IsNop)
+112285501909321000: ExecEnable: system.cpu: A0 T0 : @vectors+1156    :   nop                      : IntAlu :   flags=(IsNop)
+
+[more exception handler, no ERET here]
+
+112285501923080500: ExecEnable: system.cpu: A0 T0 : @finish_ret_to_user+188    :   ldr   x30, [sp, #240]    : MemRead :  D=0x0000000000000000 A=0xffffff8010cb3fb0  flags=(IsInteger|IsMemRef|IsLoad)
+112285501923081000: ExecEnable: system.cpu: A0 T0 : @finish_ret_to_user+192    :   add   sp, sp, #320       : IntAlu :  D=0xffffff8010cb4000  flags=(IsInteger)
+112285501923081500: ExecEnable: system.cpu: A0 T0 : 0xffffff8010084144    :   eret                     : IntAlu :  D=0x0000000000000001  flags=(IsControl|IsSerializeAfter|IsNonSpeculative|IsSquashAfter)
+112285501923082000: ExecEnable: system.cpu: A0 T0 : 0x400080    :   movz   x0, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+112285501923082500: ExecEnable: system.cpu: A0 T0 : 0x400084    :   movz   x8, #93, #0       : IntAlu :  D=0x000000000000005d  flags=(IsInteger)
+112285501923083000: ExecEnable: system.cpu: A0 T0 : 0x400088    :   svc   #0x0               : IntAlu :   flags=(IsSerializeAfter|IsNonSpeculative|IsSyscall)
+....
+
+so we conclude that:
+
+* the second WFE made the CPU stop running instructions at time 112285501668498000 and PC 0x40007c
+* the next thing that happened a long time later (112285501909320500, while a following instruction would happen at 112285501668498000 + 1000) was an interrupt, presumably the <<arm-timer>>
+* after a few interrupt handler instructions, the first <<arm-svc-instruction,ERET>> instruction exits the handler and comes back directly to the instruction after the WFE at PC 0x400080 == 0x40007c + 4
+* the execution of the interrupt handler woke up the core that was in WFE, and it now continues normal execution past the WFE
+
+Therefore, a WFE in userland is treated much like a busy loop by the Linux kernel: the kernel does not seem to try and explicitly make up room for other processes as would happen on a futex.
+
+The following test checks that SEV events don't wake up a futexes, running forever in case of success. In <<gem5-syscall-emulation-multithreading>>, this is crucial to prevent deadlocks:
+
+* link:userland/arch/aarch64/inline_asm/futex_sev.cpp[]
+
+====== ARMv8 spinlock pattern
+
+http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.faqs/ka16277.html
+
+....
+       sev
+   1:  wfe
+   2:  ldaxr  w1, [w0]
+       cbnz   w1, %1b
+       stxr   w1, w2, [w0]
+       cbnz   w1, %2b
+....
+
+It is the <<arm-ldxr-and-stxr-instructions,STXR>> from the unlock on another core that automatically wakes up the spinlock afterwards: https://stackoverflow.com/questions/32276313/how-is-a-spin-lock-woken-up-in-linux-arm64
+
+====== gem5 ARM WFE
+
+gem5 390a74f59934b85d91489f8a563450d8321b602d does not sleep on the first WFE on either syscall emulation or full system, because the code does:
+
+....
+Fault WfeInst::execute(
+    ExecContext *xc, Trace::InstRecord *traceData) const
+{
+[...]
+    if (SevMailbox == 1) {
+        SevMailbox = 0;
+        PseudoInst::quiesceSkip(tc);
+    } else if (tc->getCpuPtr()->getInterruptController(
+                tc->threadId())->checkInterrupts(tc)) {
+        PseudoInst::quiesceSkip(tc);
+    } else {
+        fault = trapWFx(tc, cpsr, scr, true);
+        if (fault == NoFault) {
+            PseudoInst::quiesce(tc);
+        } else {
+            PseudoInst::quiesceSkip(tc);
+        }
+    }
+....
+
+where https://en.wiktionary.org/wiki/quiescent["quiesce" means "sleep"] for laymen like Ciro, and `quiesceSkip` means don't sleep.
+
+`SevMailbox` is read from `MISCREG_SEV_MAILBOX` which is initialized to `1` at:
+
+....
+ISA::clear()
+{
+[...]
+    miscRegs[MISCREG_SEV_MAILBOX] = 1;
+....
+
+====== ARM YIELD instruction
+
+https://stackoverflow.com/questions/59311066/how-does-the-arm-yield-instruction-inform-other-threads-that-they-could-start-a
+
+===== ARM LDAXR and STLXR instructions
+
+Can be used to implement atomic variables, see also:
+
+* <<atomic-cpp>>
+* https://stackoverflow.com/questions/56810/how-do-i-start-threads-in-plain-c/52453291#52453291
+
+The ARMv7 analogues are LDREX and STREX.
 
 ===== ARM PSCI
 
@@ -17497,7 +18916,7 @@ TODO: create and study a minimal examples in gem5 where the DMB instruction lead
 
 ==== ARM timer
 
-The ARM timer is the simplest way to generate hardware interrupts periodically, and therefore serves as the simples example of <<arm-gic>>  usage.
+The ARM timer is the simplest way to generate hardware interrupts periodically, and therefore serves as the simples example of <<arm-gic>> usage.
 
 Working on QEMU: link:baremetal/arch/aarch64/timer.c[]
 
@@ -17862,7 +19281,7 @@ See: xref:test-this-repo[xrefstyle=full] for more useful testing tips.
 
 == Android
 
-Remember: Android AOSP is a huge undocumented piece of bloatware. It's integration into this repo will likely never be super good.
+Remember: Android AOSP is a huge undocumented piece of bloatware. It's integration into this repo will likely never be super good. See also: https://cirosantilli.com#android
 
 Verbose setup description: https://stackoverflow.com/questions/1809774/how-to-compile-the-android-aosp-kernel-and-test-it-with-the-android-emulator/48310014#48310014
 
@@ -18137,9 +19556,9 @@ cd -
 ./bench-all -A
 ....
 
-=== Continuous integraion
+=== Continuous integration
 
-We have exploreed a few Continuous integration solutions.
+We have explored a few Continuous integration solutions.
 
 We haven't setup any of them yet.
 
@@ -18149,7 +19568,7 @@ We tried to automate it on Travis with link:.travis.yml[] but it hits the curren
 
 ==== CircleCI
 
-This setup sucessfully built gem5 on every commit: link:.circleci/config.yml[]
+This setup successfully built gem5 on every commit: link:.circleci/config.yml[]
 
 Enabling it is however blocked on: https://github.com/cirosantilli/linux-kernel-module-cheat/issues/79 so we disabled the builds on the web UI.
 
@@ -18197,6 +19616,7 @@ instructions 318486337
 cmd ./run --arch arm --eval './linux/poweroff.out'
 time 6.62
 exit_status 0
+
 cmd ./run --arch arm --eval './linux/poweroff.out' --trace exec_tb
 time 6.90
 exit_status 0
@@ -18269,6 +19689,287 @@ https://github.com/cirosantilli-work/gem5-issues/issues/2
 ....
 Kernel panic - not syncing: Attempted to kill the idle task!
 ....
+
+==== Benchmark emulators on userland executables
+
+Let's see how fast our simulators are running some well known or easy to understand userland benchmarks!
+
+TODO: would be amazing to have an automated guest instructions per second count, but I'm not sure how to do that nicely for QEMU: <<qemu-get-guest-instruction-count>>.
+
+TODO: automate this further, produce the results table automatically, possibly by generalizing link:test-executables[].
+
+For now we can just run on gem5 to estimate the instruction count per input size and extrapolate?
+
+For example, the simplest scalable CPU content would be a busy loop: link:userland/gcc/busy_loop.c[], so let's start by analyzing that one.
+
+Summary of manually collected results on <<p51>> at LKMC a18f28e263c91362519ef550150b5c9d75fa3679 + 1: xref:table-busy-loop-dmips[xrefstyle=full]. As expected, the less native / more detailed / more complex simulations are slower!
+
+[[table-busy-loop-dmips]]
+.Busy loop MIPS for different simulator setups
+[options="header"]
+|===
+|LKMC |Benchmark build |Emulator command |Loops |Time (s) |Instruction count |Approximate MIPS
+
+|a18f28e263c91362519ef550150b5c9d75fa3679 + 1
+|link:userland/gcc/busy_loop.c[] `-O0`
+|`qemu --arch aarch64`
+|10^10
+|68
+|1.1 * 10^11 (approx)
+|2000
+
+|a18f28e263c91362519ef550150b5c9d75fa3679 + 1
+|link:userland/gcc/busy_loop.c[] `-O0`
+|`gem5 --arch aarch64`
+|10^7
+|100
+|1.10018162 * 10^8
+|1
+
+|a18f28e263c91362519ef550150b5c9d75fa3679 + 1
+|link:userland/gcc/busy_loop.c[] `-O0`
+|`gem5 --arch aarch64 --gem5-build-id debug`
+|10^5
+|32
+|2.528728 * 10^6
+|0.08
+
+|a18f28e263c91362519ef550150b5c9d75fa3679 + 1
+|link:userland/gcc/busy_loop.c[] `-O0`
+|`+gem5 --arch aarch64 -- --cpu-type MinorCPU --caches+`
+|10^6
+|31
+|1.1018152 * 10^7
+|0.4
+
+|a18f28e263c91362519ef550150b5c9d75fa3679 + 1
+|link:userland/gcc/busy_loop.c[] `-O0`
+|`+gem5 --arch aarch64 -- --cpu-type DerivO3CPU --caches+`
+|10^6
+|52
+|1.1018128 * 10^7
+|0.2
+
+|a18f28e263c91362519ef550150b5c9d75fa3679 + 1
+|link:userland/gcc/busy_loop.c[] `-O0`
+|`+gem5 --arch aarch64 --gem5-build-id MOESI_CMP_directory -- --cpu-type DerivO3CPU --caches --ruby+`
+|1 * 1000000 = 10^6
+|63
+|1.1005150 * 10^7
+|0.2
+
+|605448f07e6380634b1aa7e9732d111759f69fd
+|<<dhrystone>> `-O3`
+|`gem5 --arch aarch64`
+|4 * 10^5
+|68
+|9.2034139 * 10^7
+|1.6
+
+|5d233f2664a78789f9907d27e2a40e86cefad595
+|<<stream-benchmark>> `-O3`
+|`gem5 --arch aarch64 --userland-args 300000 2`
+|3 * 10^5 * 2
+|64
+|9.9674773 * 10^7
+|1.6
+
+|ab6f7331406b22f8ab6e2df5f8b8e464fb35b611
+|glibc C pre-main link:userland/c/m5ops.c[] `-O0`
+|`gem5 --arch aarch64 --userland-args e`
+|1
+|2
+|1.26479 * 10^5
+|0.05
+
+|ab6f7331406b22f8ab6e2df5f8b8e464fb35b611
+|glibc C pre-main link:userland/c/m5ops.c[] `-O0`
+|`gem5 --arch aarch64 --userland-args e --gem5-build-type debug`
+|1
+|2
+|1.26479 * 10^5
+|0.05
+
+|ab6f7331406b22f8ab6e2df5f8b8e464fb35b611
+|glibc C++ pre-main link:userland/cpp/m5ops.cpp[] `-O0`
+|`gem5 --arch aarch64 --userland-args e`
+|1
+|2
+|2.385012 * 10^6
+|1
+
+|ab6f7331406b22f8ab6e2df5f8b8e464fb35b611
+|glibc C++ pre-main link:userland/cpp/m5ops.cpp[] `-O0`
+|`gem5 --arch aarch64 --userland-args e --gem5-build-type debug`
+|1
+|25
+|2.385012 * 10^6
+|0.1
+
+|ab6f7331406b22f8ab6e2df5f8b8e464fb35b611
+|immediate exit link:userland/arch/aarch64/freestanding/linux/gem5_exit.S[] `-O0`
+|`gem5 --arch aarch64`
+|1
+|1
+|
+|
+
+|ab6f7331406b22f8ab6e2df5f8b8e464fb35b611
+|immediate exit link:userland/arch/aarch64/freestanding/linux/gem5_exit.S[] `-O0`
+|`gem5 --arch aarch64 --gem5-build-type debug`
+|1
+|1
+|
+|
+
+|===
+
+The first step is to determine a number of loops that will run long enough to have meaningful results, but not too long that we will get bored, so about 1 minute.
+
+On our <<p51>> machine, we found 10^7 (10 million == 1000 times 10000) loops to be a good number for a gem5 atomic simulation:
+
+....
+./run --arch aarch64 --emulator gem5 --userland userland/gcc/busy_loop.c --userland-args '1 10000000'
+./gem5-stat --arch aarch64 sim_insts
+....
+
+as it gives:
+
+* time: 00:01:40
+* instructions: 110018162 ~ 110 millions
+
+so ~ 110 million instructions / 100 seconds makes ~ 1 MIPS (million instructions per second).
+
+This experiment also suggests that each loop is about 11 instructions long (110M instructions / 10M loops), so we look at the disassembly:
+
+....
+./run-toolchain --arch aarch64 gdb -- -batch -ex 'disas busy_loop' "$(./getvar --arch aarch64 userland_build_dir)/gcc/busy_loop.out"
+....
+
+which contains:
+
+....
+8       ) {
+   0x0000000000400698 <+0>:     ff 83 00 d1     sub     sp, sp, #0x20
+   0x000000000040069c <+4>:     e0 07 00 f9     str     x0, [sp, #8]
+   0x00000000004006a0 <+8>:     e1 03 00 f9     str     x1, [sp]
+
+9           for (unsigned i = 0; i < max; i++) {
+   0x00000000004006a4 <+12>:    ff 1f 00 b9     str     wzr, [sp, #28]
+   0x00000000004006a8 <+16>:    11 00 00 14     b       0x4006ec <busy_loop+84>
+
+10              for (unsigned j = 0; j < max2; j++) {
+   0x00000000004006ac <+20>:    ff 1b 00 b9     str     wzr, [sp, #24]
+   0x00000000004006b0 <+24>:    08 00 00 14     b       0x4006d0 <busy_loop+56>
+
+11                  __asm__ __volatile__ ("" : "+g" (j), "+g" (j) : :);
+   0x00000000004006b4 <+28>:    e1 1b 40 b9     ldr     w1, [sp, #24]
+   0x00000000004006b8 <+32>:    e0 1b 40 b9     ldr     w0, [sp, #24]
+   0x00000000004006bc <+36>:    e1 1b 00 b9     str     w1, [sp, #24]
+   0x00000000004006c0 <+40>:    e0 17 00 b9     str     w0, [sp, #20]
+
+10              for (unsigned j = 0; j < max2; j++) {
+   0x00000000004006c4 <+44>:    e0 17 40 b9     ldr     w0, [sp, #20]
+   0x00000000004006c8 <+48>:    00 04 00 11     add     w0, w0, #0x1
+   0x00000000004006cc <+52>:    e0 1b 00 b9     str     w0, [sp, #24]
+   0x00000000004006d0 <+56>:    e0 1b 40 b9     ldr     w0, [sp, #24]
+   0x00000000004006d4 <+60>:    e1 03 40 f9     ldr     x1, [sp]
+   0x00000000004006d8 <+64>:    3f 00 00 eb     cmp     x1, x0
+   0x00000000004006dc <+68>:    c8 fe ff 54     b.hi    0x4006b4 <busy_loop+28>  // b.pmore
+
+9           for (unsigned i = 0; i < max; i++) {
+   0x00000000004006e0 <+72>:    e0 1f 40 b9     ldr     w0, [sp, #28]
+   0x00000000004006e4 <+76>:    00 04 00 11     add     w0, w0, #0x1
+   0x00000000004006e8 <+80>:    e0 1f 00 b9     str     w0, [sp, #28]
+   0x00000000004006ec <+84>:    e0 1f 40 b9     ldr     w0, [sp, #28]
+   0x00000000004006f0 <+88>:    e1 07 40 f9     ldr     x1, [sp, #8]
+   0x00000000004006f4 <+92>:    3f 00 00 eb     cmp     x1, x0
+   0x00000000004006f8 <+96>:    a8 fd ff 54     b.hi    0x4006ac <busy_loop+20>  // b.pmore
+
+12              }
+13          }
+14      }
+   0x00000000004006fc <+100>:   1f 20 03 d5     nop
+   0x0000000000400700 <+104>:   ff 83 00 91     add     sp, sp, #0x20
+   0x0000000000400704 <+108>:   c0 03 5f d6     ret
+....
+
+We look for the internal backwards jumps, and we find two:
+
+....
+   0x00000000004006dc <+68>:    c8 fe ff 54     b.hi    0x4006b4 <busy_loop+28>  // b.pmore
+   0x00000000004006f8 <+96>:    a8 fd ff 54     b.hi    0x4006ac <busy_loop+20>  // b.pmore
+....
+
+and so clearly the one at 0x4006dc happens first and jumps to a larger address than the other one, so the internal loop must be between 4006dc and 4006b4, which contains exactly 11 instructions! Bingo!
+
+Oh my God, unoptimized code is so horrendously inefficient, even I can't stand all those useless loads and stores to memory variables!!!
+
+Then for QEMU, we experimentally turn the number of loops up to 10^10 loops (`100000 100000`), which contains an expected 11 * 10^10 instructions, and the runtime is 00:01:08, so we have 1.1 * 10^11 instruction / 68 seconds ~ 2 * 10^9 = 2000 MIPS!
+
+We can then repeat the experiment for other gem5 CPUs to see how they compare.
+
+===== User mode vs full system benchmark
+
+Let's see if user mode runs considerably faster than full system or not, ignoring the kernel boot.
+
+First we build <<dhrystone>> manually statically since dynamic linking is broken in gem5 as explained at: xref:gem5-syscall-emulation-mode[xrefstyle=full].
+
+TODO: move this section to our new custom dhrystone setup: xref:dhrystone[xrefstyle=full].
+
+gem5 user mode:
+
+....
+./build-buildroot --arch arm --config 'BR2_PACKAGE_DHRYSTONE=y'
+make \
+  -B \
+  -C "$(./getvar --arch arm buildroot_build_build_dir)/dhrystone-2" \
+  CC="$(./run-toolchain --arch arm --print-tool gcc)" \
+  CFLAGS=-static \
+;
+time \
+  ./run \
+  --arch arm \
+  --emulator gem5 \
+  --userland "$(./getvar --arch arm buildroot_build_build_dir)/dhrystone-2/dhrystone" \
+  --userland-args 'asdf qwer' \
+;
+....
+
+gem5 full system:
+
+....
+time \
+  ./run \
+  --arch arm \
+  --eval-after './gem5.sh' \
+  --emulator gem5
+  --gem5-readfile 'dhrystone 100000' \
+;
+....
+
+QEMU user mode:
+
+....
+time qemu-arm "$(./getvar --arch arm buildroot_build_build_dir)/dhrystone-2/dhrystone" 100000000
+....
+
+QEMU full system:
+
+....
+time \
+  ./run \
+  --arch arm \
+  --eval-after 'time dhrystone 100000000;./linux/poweroff.out' \
+;
+....
+
+Result on <<p51>> at bad30f513c46c1b0995d3a10c0d9bc2a33dc4fa0:
+
+* gem5 user: 33 seconds
+* gem5 full system: 51 seconds
+* QEMU user: 45 seconds
+* QEMU full system: 223 seconds
 
 ==== Benchmark builds
 
@@ -18456,8 +20157,189 @@ The build system of that project is a bit excessive / wonky. You need an edge CM
 
 Argh, compilers are boring, let's learn a bit about them.
 
-* link:userland/gcc/busy_loop.c[]: https://stackoverflow.com/questions/7083482/how-to-prevent-gcc-from-optimizing-out-a-busy-wait-loop/58758133#58758133
-* link:userland/gcc/prevent_reorder.cpp[]: https://stackoverflow.com/questions/37786547/enforcing-statement-order-in-c/56865717#56865717
+=== Prevent statement reordering
+
+link:userland/gcc/prevent_reorder.cpp[]
+
+https://stackoverflow.com/questions/37786547/enforcing-statement-order-in-c/56865717#56865717
+
+We often need to do this to be sure that benchmark instrumentation is actually being put around the region of interest!
+
+=== Infinite busy loop
+
+link:userland/gcc/busy_loop.c[]
+
+The hard part is how to prevent the compiler from optimizing it away: https://stackoverflow.com/questions/7083482/how-to-prevent-gcc-from-optimizing-out-a-busy-wait-loop/58758133#58758133
+
+== Computer architecture
+
+=== Cache coherence
+
+https://en.wikipedia.org/wiki/Cache_coherence
+
+Algorithms to keep the caches of different cores of a system coherent.
+
+E.g.: if one processors writes to the cache, other processors have to know about it before they read from that address.
+
+==== MSI protocol
+
+https://en.wikipedia.org/wiki/MSI_protocol
+
+This is the most basic non-trivial coherency protocol, and therefore the first one you should learn.
+
+Helpful video: https://www.youtube.com/watch?v=gAUVAel-2Fg "MSI Coherence - Georgia Tech - HPCA: Part 5" by Udacity.
+
+Let's focus on a single cache line representing a given memory address.
+
+The system looks like this:
+
+....
++----+
+|DRAM|
++----+
+^
+|
+v
++--------+
+| BUS    |
++--------+
+^        ^
+|        |
+v        v
++------+ +------+
+|CACHE1| |CACHE2|
++------+ +------+
+^        ^
+|        |
+|        |
++----+   +----+
+|CPU1|   |CPU2|
++----+   +----+
+....
+
+MSI stands for which states each cache can be in for a given cache line. The states are:
+
+* Modified: a single cache has the valid data and it has been modified from DRAM.
++
+Both reads and writes are free, because we don't have to worry about other processors.
+* Shared: the data is synchronized with DRAM, and may be present in multiple caches.
++
+Reads are free, but writes need to do extra work.
++
+This is the "most interesting" state of the protocol, as it allows for those free reads, even when multiple processors are using some address.
+* Invalid: the cache does not have the data, CPU reads and writes need to do extra work
+
+The above allowed states can be summarized in the following table:
+
+....
+         CACHE1
+         MSI
+       M nny
+CACHE2 S nyy
+       I yyy
+....
+
+The whole goal of the protocol is to maintain that state at all times, so that we can get those free reads when in shared state!
+
+To do so, the caches have to pass messages between themselves! This means generating bus traffic, which has a cost and must be kept to a minimum.
+
+The system components can receive and send the following messages:
+
+* CPUn can send to CACHEn:
+** "Local read": CPU reads from cache
+** "Local write": CPU writes to cache
+* CACHEn to itself:
+** "Evict": the cache is running out of space due to another request
+* CACHEn can send the following message to the bus.
+** "Bus read": the cache needs to get the data. The reply will contain the full data line. It can come either from another cache that has the data, or from DRAM if none do.
+** "Bus write": the cache wants to modify some data, and it does not have the line.
++
+The reply must contain the full data line, because maybe the processor just wants to change one byte, but the line is much larger.
++
+That's why this request can also be called "Read Exclusive", as it is basically a "Bus Read" + "Invalidate" in one
+** "Invalidate": the cache wants to modify some data, but it knows that all other caches are up to date, because it is in shared state.
++
+Therefore, it does not need to fetch the data, which saves bus traffic compared to "Bus write" since the data itself does not need to be sent.
+** "Write back": send the data on the bus and tell someone to pick it up: either DRAM or another cache
+
+When a message is sent to the bus:
+
+* all other caches and the DRAM will see it, this is called "snooping"
+* either caches or DRAM can reply if a reply is needed, but other caches get priority to reply earlier if they can, e.g. to serve a cache request from other caches rather than going all the way to DRAM
+
+When a cache receives a message, it do one or both of:
+
+* change to another MSI state
+* send a message to the bus
+
+And finally, the transitions are:
+
+* Modified:
+** "Local read": don't need to do anything because only the current cache holds the data
+** "Local write": don't need to do anything because only the current cache holds the data
+** "Evict": have to save data to DRAM so that our local modifications won't be lost
+*** Move to: Invalid
+*** Send message: "Write back"
+** "Bus read": another cache is trying to read the address which we owned exclusively.
++
+Since we know what the latest data is, we can move to "Shared" rather than "Invalid" to possibly save time on future reads.
++
+But to do that, we need to write the data back to DRAM to maintain the shared state consistent. The <<mesi-protocol>> prevents that extra read in some cases.
++
+And it has to be either: before the other cache gets its data from DRAM, or better, the other cache can get its data from our write back itself just like the DRAM.
++
+*** Move to: Shared
+*** Send message: "Write back"
+** "Bus write": someone else will write to our address.
++
+We don't know what they will write, so the best bet is to move to invalid.
++
+Since the writer will become the new sole data owner, the writer can get the cache from us without going to DRAM at all! This is fine, because the writer will be the new sole owner of the line, so DRAM can remain dirty without problems.
++
+*** Move to: Invalid
+*** Send message: "Write back"
+* Shared: TODO
+** "Local read":
+** "Local write":
+** "Evict":
+** "Bus read":
+** "Bus write":
+* Invalid: TODO
+** "Local read":
+** "Local write":
+** "Evict":
+** "Bus read":
+** "Bus write":
+
+TODO gem5 concrete example.
+
+==== MESI protocol
+
+https://en.wikipedia.org/wiki/MESI_protocol
+
+Splits the Shared of <<msi-protocol>> into a new Exclusive state:
+
+* MESI Exclusive: clean but only present in one cache
+* MESI Shared: clean but may be present in more that one cache
+
+TODO advantage: I think the advantages over MSI are:
+
+* when we move from Exclusive to Shared, no DRAM write back is needed, because we know that the cache is clean
+* when we move from Exclusive to Modified, no invalidate message is required, reducing bus traffic
+
+Exclusive is entered from Invalid after a "Local read", but only if the reply came from DRAM! If the reply came from another cache, we go directly to shared instead.
+
+==== MOSI protocol
+
+https://en.wikipedia.org/wiki/MOSI_protocol
+
+TODO compare to MSI and understand advantages. From Wikipedia it seems that MOSI can get data from the Owned cache while MSI cannot get data from Shared caches and must go to memory, but why not? Why do we need that Owned? Is it because there are multiple Shared caches and them all replying at the same time would lead to problems?
+
+==== MOESI protocol
+
+https://en.wikipedia.org/wiki/MOESI_protocol
+
+<<mesi-protocol>> + <<mosi-protocol>>, not much else to it!
 
 == About this repo
 
@@ -18707,6 +20589,17 @@ Verify with:
 ls "$(./getvar buildroot_build_build_dir)"
 ....
 
+=== Custom build directory
+
+For now there is no way to change the build directory from `out/` (resp. `out.docker` for <<docker>.) to something else.
+
+However, if you just want to place the build storage in your hard drive and the source in your SSD, which is a good configuration if you are doing lots of builds, just create a symlink as:
+
+....
+mkdir -p /mnt/hd/linux-kernel-module-cheat-out
+ln -s out /mnt/hd/linux-kernel-module-cheat-out
+....
+
 === ccache
 
 https://en.wikipedia.org/wiki/Ccache[ccache] <<benchmark-builds,might>> save you a lot of re-build when you decide to <<clean-the-build>> or create a new <<build-variants,build variant>>.
@@ -18747,6 +20640,62 @@ We have https://buildroot.org/downloads/manual/manual.html#ccache[enabled ccache
 
 * absolute paths are used and GDB can find source files
 * but builds are not reused across separated LKMC directories
+
+=== getvar
+
+The link:getvar[] helper script can print the values of internal LKMC variables.
+
+Within our Python scripts such as link:common.py[], those variable are visible as `self.env[<var>]`.
+
+For example, to find the Buildroot output directory for an `aarch64` build, you could use:
+
+....
+./getvar --arch aarch64 buildroot_build_dir
+....
+
+which as of LKMC b15a0e455d691afa49f3b813ad9b09394dfb02b7 outputs:
+
+....
+/path/to/linux-kernel-module-cheat/out/buildroot/build/default/aarch64
+....
+
+You can also list all available variables in one go with just:
+
+....
+./getvar
+....
+
+Using link:getvar[] makes it possible to make Bash scripts more portable if for example directory structure changes across LKMC versions.
+
+For this reason, we use it in particular often in this README to reduce the need for refactoring.
+
+==== run-toolchain
+
+While you could just manually find/learn the path to toolchain tools, e.g. in LKMC b15a0e455d691afa49f3b813ad9b09394dfb02b7 they are
+
+....
+./out/buildroot/build/default/aarch64/host/bin/aarch64-buildroot-linux-gnu-gcc userland/c/hello.c
+./out/buildroot/build/default/aarch64/host/bin/aarch64-buildroot-linux-gnu-objdump -D a.out
+....
+
+you can save some typing and get portability across directory structure changes with our link:run-toolchain[] helper:
+
+....
+./run-toolchain --arch aarch64 gcc -- userland/c/hello.c
+./run-toolchain --arch aarch64 objdump -- -D a.out
+....
+
+Alternatively, if you just need a variable to feed into your own Build system, you can also use <<getvar>>:
+
+....
+./getvar --arch aarch64 toolchain_prefix
+....
+
+which outputs as of LKMC b15a0e455d691afa49f3b813ad9b09394dfb02b7:
+
+....
+/path/to/linux-kernel-module-cheat/out/buildroot/build/default/aarch64/host/usr/bin/aarch64-buildroot-linux-gnu
+....
 
 === Rebuild Buildroot while running
 
@@ -18974,7 +20923,7 @@ git clone https://my.private.repo.com/my-fork/gem5.git gem5-internal
 gem5_internal="$(pwd)/gem5-internal"
 ....
 
-Next, when you want to build with the private repository, use the `--gem5-build-dir` and  `--gem5-source-dir` argument to override our default gem5 source and build locations:
+Next, when you want to build with the private repository, use the `--gem5-build-dir` and `--gem5-source-dir` argument to override our default gem5 source and build locations:
 
 ....
 cd linux-kernel-module-cheat
@@ -19177,7 +21126,7 @@ This output directory contains all the files that LKMC will put inside the final
 
 LKMC first collects all the files that it will dump into the guest there, and then in the very last step dumps everything into the final image.
 
-In Buildroot, this is done by pointing `BR2_ROOTFS_OVERLAY` to that directory.
+In Buildroot, this is done by pointing `BR2_ROOTFS_OVERLAY` to that directory, which is documented at: https://buildroot.org/downloads/manual/manual.html#rootfs-custom
 
 This does not include native image modification mechanisms such as <<buildroot_packages-directory,Buildroot packages>>, which we let Buildroot itself manage.
 
@@ -19198,21 +21147,6 @@ Those files also contain arch specific helpers under ifdefs like:
 
 We try to keep as much as possible in those files. It bloats builds a little, but just makes everything simpler to understand.
 
-==== rand_check.out
-
-Print out several parameters that normally change randomly from boot to boot:
-
-....
-./run --eval-after './linux/rand_check.out;./linux/poweroff.out'
-....
-
-Source: link:userland/linux/rand_check.c[]
-
-This can be used to check the determinism of:
-
-* <<norandmaps>>
-* <<qemu-record-and-replay>>
-
 ==== lkmc_home
 
 `lkmc_home` refers to the target base directory in which we put all our custom built stuff, such as <<userland-setup,userland executables>> and <<your-first-kernel-module-hack,kernel modules>>.
@@ -19231,6 +21165,71 @@ To save you from typing that path every time, we have made our most common comma
 * `--eval` and `--eval-after` through <<replace-init>> and <<init-busybox>>
 
 Whenever a relative path is used inside a guest sample command, e.g. `insmod hello.ko` or `./hello.out`, it means that the path lives in `lkmc_home` unless stated otherwise.
+
+[[path-properties]]
+==== path_properties.py
+
+In order to build and run each userland and <<baremetal-setup,baremetal>> example properly, we need per-file metadata such as compiler flags and required number of cores.
+
+This data is stored is stored in link:path_properties.py[] at `path_properties_tuples`.
+
+Maybe we should embed it magically into source files directories to make it easier to see? But one big Python dict was easier to implement so we started like this. And it allows factoring chunks out easily.
+
+The format is as follows:
+
+....
+'path_component': (
+    {'property': value},
+    {
+        'child_path_component':
+        {
+            {'child_property': },
+            {}
+        }
+    }
+)
+....
+
+and as a shortcut, paths that don't have any children can be written directly as:
+
+.....
+'path_component': {'property': value}
+.....
+
+Properties of parent directories apply to all children.
+
+Lists coming from parent directories are extended instead of overwritten by children, this is especially useful for C compiler flags.
+
+To quickly determine which properties a path has, you can use link:getprops[], e.g.:
+
+....
+./getprops userland/c/hello.c
+....
+
+which outputs values such as:
+
+....
+allowed_archs=None
+allowed_emulators=None
+arm_aarch32=False
+arm_sve=False
+baremetal=True
+....
+
+==== rand_check.out
+
+Print out several parameters that normally change randomly from boot to boot:
+
+....
+./run --eval-after './linux/rand_check.out;./linux/poweroff.out'
+....
+
+Source: link:userland/linux/rand_check.c[]
+
+This can be used to check the determinism of:
+
+* <<norandmaps>>
+* <<qemu-record-and-replay>>
 
 === Test this repo
 
@@ -19504,40 +21503,6 @@ Other bisection helpers include:
 * link:bisect-linux-boot-gem5[]
 * link:bisect-gem5-linux-boot[]
 
-[[path-properties]]
-=== path_properties
-
-In order to build and run each userland and <<baremetal-setup,baremetal>> example properly, we need per-file metadata such as compiler flags and required number of cores.
-
-This data is stored is stored in link:path_properties.py[] at `path_properties_tuples`.
-
-Maybe we should embed it magically into source files directories to make it easier to see? But one big Python dict was easier to implement so we started like this. And it allows factoring chunks out easily.
-
-The format is as follows:
-
-....
-'path_component': (
-    {'property': value},
-    {
-        'child_path_component':
-        {
-            {'child_property': },
-            {}
-        }
-    }
-)
-....
-
-and as a shortcut, paths that don't have any children can be written directly as:
-
-.....
-'path_component': {'property': value}
-.....
-
-Properties of parent directories apply to all children.
-
-Lists coming from parent directories are extended instead of overwritten by children, this is especially useful for C compiler flags.
-
 === Update a forked submodule
 
 This is a template update procedure for submodules for which we have some patches on on top of mainline.
@@ -19620,7 +21585,7 @@ Go through all the other <<getting-started>> sections in order.
 Once everything looks fine, publish the release with:
 
 ....
-git tag -a  v3.0
+git tag -a v3.0
 # Describe the release int the tag message.
 git push --follow-tags
 ./release-zip --all-archs
@@ -19877,6 +21842,7 @@ Runnable stuff:
 * https://github.com/s-matyukevich/raspberry-pi-os Does both an OS from scratch, and annotates the corresponding kernel source code. For RPI3, no QEMU support: https://github.com/s-matyukevich/raspberry-pi-os/issues/8
 * https://github.com/pw4ever/linux-kernel-hacking-helper as of bd9952127e7eda643cbb6cb4c51ad7b5b224f438, Bash, Arch Linux rootfs
 * https://github.com/MichielDerhaeg/build-linux untested. Manually builds musl and BusyBox, no Buildroot. Seems to use host packaged toolchain and tested on x86_64 only. Might contain a minimized kernel config.
+* https://eli.thegreenplace.net and the accompanying code: https://github.com/eliben/code-for-blog
 
 Theory:
 

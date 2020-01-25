@@ -2,6 +2,7 @@
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -28,7 +29,7 @@ Run some content on an emulator.
             '--ctrl-c-host',
             default=False,
             help='''\
-Ctrl +C kills the QEMU simulator instead of being passed to the guest.
+Ctrl + C kills the QEMU simulator instead of being passed to the guest.
 '''
         )
         self.add_argument(
@@ -38,12 +39,23 @@ Ctrl +C kills the QEMU simulator instead of being passed to the guest.
             help='''\
 Run GDB on the emulator itself.
 For --emulator native, this debugs the target program.
+See also: https://cirosantilli.com/linux-kernel-module-cheat#debug-the-emulator
 '''
         )
         self.add_argument(
             '--debug-vm-args',
             default='',
-            help='Pass arguments to GDB. Implies --debug-vm.'
+            help='''\
+Pass arguments to GDB. Implies --debug-vm. If --debug-vm-rr is used,
+pass the given arguments to GDB on the replay.
+'''
+        )
+        self.add_argument(
+            '--debug-vm-file',
+            help='''\
+Like --debug-vm, but also source this file. Equivalent to
+--debug-vm-args='-ex "source $file"'.
+'''
         )
         self.add_argument(
             '--debug-vm-rr',
@@ -116,7 +128,10 @@ See: https://cirosantilli.com/linux-kernel-module-cheat#gdb
             '--gem5-script',
             default='fs',
             choices=['fs', 'biglittle'],
-            help='Which gem5 script to use'
+            help='''\
+Which gem5 script to use.
+See e.g.: https://cirosantilli.com/linux-kernel-module-cheat#gem5-fs-biglittle
+'''
         )
         self.add_argument(
             '--gem5-readfile',
@@ -206,7 +221,7 @@ See: http://github.com/cirosantilli/linux-kernel-module-cheat#kvm
             '--memory',
             default='256M',
             help='''\
-Set the memory size of the guest. E.g.: `-m 512M`. We try to keep the default
+Set the memory size of the guest. E.g.: `--memory 512M`. We try to keep the default
 at the minimal ammount amount that boots all archs. Anything lower could lead
 some arch to fail to boot.
 Default: %(default)s
@@ -220,13 +235,11 @@ Setup a kernel init parameter that makes the emulator quit immediately after boo
 '''
         )
         self.add_argument(
-            '-R',
             '--replay',
             default=False,
             help='Replay a QEMU run record deterministically'
         )
         self.add_argument(
-            '-r',
             '--record',
             default=False,
             help='Record a QEMU run record for later replay with `-R`'
@@ -235,6 +248,14 @@ Setup a kernel init parameter that makes the emulator quit immediately after boo
             '--show-stdout',
             default=True,
             help='''Show emulator stdout and stderr on the host terminal.'''
+        )
+        self.add_argument(
+            '--stdin-file',
+            help='''\
+Set the given file as the stdin source of the emulator. QEMU and gem5 then
+forward this to the guest in user mode simulation.
+https://cirosantilli.com/linux-kernel-module-cheat#syscall-emulation-mode-program-stdin
+'''
         )
         self.add_argument(
             '--terminal',
@@ -353,8 +374,11 @@ Extra options to append at the end of the emulator command line.
             self.env['tmux'] = True
         if self.env['debug_vm_rr']:
             debug_vm = ['rr', 'record']
-        elif self.env['debug_vm'] or self.env['debug_vm_args']:
-            debug_vm = ['gdb', LF, '-q', LF] + self.sh.shlex_split(self.env['debug_vm_args']) + ['--args', LF]
+        elif self.env['debug_vm'] or self.env['debug_vm_args'] or self.env['debug_vm_file']:
+            debug_vm = ['gdb', LF, '-q', LF] + self.sh.shlex_split(self.env['debug_vm_args'])
+            if self.env['debug_vm_file'] is not None:
+                debug_vm.extend(['-ex', 'source {}'.format(self.env['debug_vm_file']), LF])
+            debug_vm.extend(['--args', LF])
         else:
             debug_vm = []
         if self.env['gdb_wait']:
@@ -492,6 +516,17 @@ Extra options to append at the end of the emulator command line.
                 ])
                 if self.env['userland_args'] is not None:
                     cmd.extend(['--options', self.env['userland_args'], LF])
+                if not self.env['static']:
+                    for path in self.env['userland_library_redirects']:
+                        cmd.extend([
+                            '--redirects',
+                            '{}={}'.format(
+                                os.sep + path,
+                                os.path.join(self.env['userland_library_dir'], path)
+                            ),
+                            LF
+                        ])
+                    cmd.extend(['--interp-dir', self.env['userland_library_dir'], LF])
             else:
                 if self.env['gem5_script'] == 'fs':
                     if self.env['gem5_restore'] is not None:
@@ -504,7 +539,6 @@ Extra options to append at the end of the emulator command line.
                         self.env['gem5_fs_file'], LF,
                         '--disk-image', self.env['disk_image'], LF,
                         '--kernel', self.env['image'], LF,
-                        '--mem-size', memory, LF,
                         '--num-cpus', str(self.env['cpus']), LF,
                         '--script', self.env['gem5_readfile_file'], LF,
                     ])
@@ -590,6 +624,7 @@ Extra options to append at the end of the emulator command line.
                             ),
                             LF
                         ])
+            cmd.extend(['--mem-size', memory, LF])
             if self.env['gdb_wait']:
                 # https://stackoverflow.com/questions/49296092/how-to-make-gem5-wait-for-gdb-to-connect-to-reliably-break-at-start-kernel-of-th
                 cmd.extend(['--param', 'system.cpu[0].wait_for_remote_gdb = True', LF])
@@ -729,11 +764,11 @@ Extra options to append at the end of the emulator command line.
                         ])
                 if rr:
                     extra_emulator_args.extend([
-                        '-object', 'filter-replay,id=replay,netdev=net0',
+                        '-object', 'filter-replay,id=replay,netdev=net0', LF,
                         '-icount', 'shift=7,rr={},rrfile={}'.format(
                             'record' if self.env['record'] else 'replay',
                             self.env['qemu_rrfile']
-                        ),
+                        ), LF,
                     ])
                     virtio_gpu_pci = []
                 else:
@@ -807,10 +842,14 @@ Extra options to append at the end of the emulator command line.
             out_file=out_file,
             raise_on_failure=False,
             show_stdout=show_stdout,
+            stdin_path=self.env['stdin_file'],
         )
         if self.env['debug_vm_rr']:
+            rr_cmd = ['rr', 'replay', LF, '-o', '-q', LF]
+            for arg in shlex.split(self.env['debug_vm_args']):
+                rr_cmd.extend(['-o', arg, LF]);
             exit_status = self.sh.run_cmd(
-                ['rr', 'replay', '-o', '-q'],
+                rr_cmd,
                 raise_on_failure=False,
                 show_stdout=show_stdout,
             )

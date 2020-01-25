@@ -11,6 +11,7 @@ class PathProperties:
     # All new properties must be listed here or else you get an error.
     default_properties = {
         'allowed_archs': None,
+        'allowed_emulators': None,
         # The example uses aarch32 instructions which are not present in ARMv7.
         # Therefore, it cannot be run in baremetal ARMv7 CPUs.
         # User mode simulation however seems to enable aarch32 so these run fine.
@@ -50,10 +51,12 @@ class PathProperties:
         # We should get rid of this if we ever properly implement dependency graphs.
         'extra_objs_lkmc_common': False,
         'gem5_unimplemented_instruction': False,
-        'qemu_unimplemented_instruction': False,
+        # Fully, or partially unimplemented.
+        'gem5_unimplemented_syscall': False,
         # For some reason QEMU fails with SIGSEGV on int syscalls in x86_64.
         'qemu_x86_64_int_syscall': False,
         'interactive': False,
+        'minimum_gcc_version': (0, 0, 0),
         # The script takes a perceptible amount of time to run. Possibly an infinite loop.
         'more_than_1s': False,
         # The path should not be built. E.g., it is symlinked into multiple archs.
@@ -62,6 +65,7 @@ class PathProperties:
         # it only generates intermediate object files. Therefore it
         # should not be run while testing.
         'no_executable': False,
+        'qemu_unimplemented_instruction': False,
         # The script requires a non-trivial to determine argument to be passed to run properly.
         'requires_argument': False,
         # Let's not test stuff that relies on the internet by default, user might be offline,
@@ -90,12 +94,68 @@ class PathProperties:
         # We were lazy to properly classify why we are skipping these tests.
         # TODO get it done.
         'skip_run_unclassified': False,
+        # Look for the given file under test_data/ relative to the file under test,
+        # and pass the given file as the stdin of the program. The .i input extension is
+        # appended implicitly to the test path.
+        'test_stdin_data': None,
         # Aruments added automatically to run when running tests,
         # but not on manual running.
         'test_run_args': {},
         # Examples that can be built in userland.
         'userland': False,
+        # Known instructions that this test uses, and which may not be implemented
+        # in a given simulator, in which case we skip.
+        'uses_instructions': {},
     }
+
+    unimplemented_instructions = {
+        'gem5': {
+            'arm': {
+                'vcvta',
+            },
+            'x86_64': {
+                'fcomi',
+                'fcomip',
+                'fsqrt',
+                'popcnt',
+                'rdrand',
+                'rdtscp',
+                'vfmadd132pd',
+            },
+        },
+        'qemu': {
+            'x86_64': {
+                'popcnt',
+                'rdtscp',
+                'rdrand',
+                'vfmadd132pd',
+            }
+        },
+    }
+
+    # TODO wire up.
+    unimplemented_userland_syscalls = {
+        'gem5': {
+            'all': {
+                'wait',
+            },
+            'arm': {
+            },
+            'x86_64': {
+            },
+        },
+        'qemu': {
+            'all': {
+            },
+            'arm': {
+            },
+            'x86_64': {
+            },
+        },
+    }
+
+    # TODO maybe extract automatically from GCC executable?
+    current_gcc_version = (7, 3, 0)
 
     '''
     Encodes properties of userland and baremetal paths.
@@ -160,14 +220,29 @@ class PathProperties:
                 # Our C compiler does not suppport SVE yet.
                 # https://cirosantilli.com/linux-kernel-module-cheat#update-gcc-gcc-supported-by-buildroot
                 os.path.splitext(self.path_components[-1])[1] == '.c' and self['arm_sve']
+            ) and not (
+                # C++ multithreading in static does not seem to work:
+                # https://cirosantilli.com/linux-kernel-module-cheat#cpp-static-and-pthreads
+                os.path.splitext(self.path_components[-1])[1] == '.cpp' and (
+                    # TODO the better check here would be for 'static'
+                    # to factor out with test-executable logic, but lazy.
+                    # env['static'] and
+                    env['emulator'] == 'gem5' and
+                    'cpus' in self['test_run_args'] and
+                    self['test_run_args']['cpus'] > 1
+                )
+            ) and not (
+                self['minimum_gcc_version'] > self.current_gcc_version
             )
         )
 
     def should_be_tested(self, env):
+        basename = self.path_components[-1]
         return (
             self.should_be_built(
                 env,
             ) and
+            not basename.startswith(env['tmp_prefix']) and
             not (
                 env['mode'] == 'baremetal' and (
                     self['arm_aarch32'] or
@@ -187,8 +262,8 @@ class PathProperties:
             not (
                 env['emulator'] == 'gem5' and
                 (
-                    self['gem5_unimplemented_instruction'] or
-                    # gem5 does not report signals properly.
+                    self['gem5_unimplemented_syscall'] or
+                    # https://github.com/cirosantilli/linux-kernel-module-cheat/issues/101
                     self['signal_received'] is not None or
                     self['requires_dynamic_library'] or
                     self['requires_semihosting'] or
@@ -198,9 +273,21 @@ class PathProperties:
             not (
                 env['emulator'] == 'qemu' and
                 (
-                    self['requires_m5ops'] or
-                    self['qemu_unimplemented_instruction']
+                    self['requires_m5ops']
                 )
+            ) and
+            not (
+                env['arch'] in self['uses_instructions'] and
+                env['emulator'] in self.unimplemented_instructions and
+                env['arch'] in self.unimplemented_instructions[env['emulator']] and
+                (
+                    self.unimplemented_instructions[env['emulator']][env['arch']] &
+                    self['uses_instructions'][env['arch']]
+                )
+            ) and
+            (
+                self['allowed_emulators'] is None or
+                env['emulator'] in self['allowed_emulators']
             )
         )
 
@@ -236,6 +323,9 @@ class PrefixTree:
 
     @staticmethod
     def make_from_tuples(tuples):
+        '''
+        TODO check that all paths exist.
+        '''
         def tree_from_tuples(tuple_):
             if not type(tuple_) is tuple:
                 tuple_ = (tuple_, {})
@@ -253,6 +343,9 @@ class PrefixTree:
         return top_tree
 
 def get(path):
+    '''
+    Get the merged path properties of a given path.
+    '''
     cur_node = path_properties_tree
     path_components = path.split(os.sep)
     path_properties = PathProperties(cur_node.path_properties.properties.copy())
@@ -360,6 +453,21 @@ path_properties_tuples = (
                 'userland': True,
             },
             {
+                'algorithm': (
+                    {},
+                    {
+                        'set': (
+                            {
+                                'test_stdin_data': '8',
+                            },
+                            {
+                                'std_priority_queue_gem5.cpp': {'allowed_emulators': {'gem5'}},
+                                'std_set_gem5.cpp': {'allowed_emulators': {'gem5'}},
+                                'std_unordered_set_gem5.cpp': {'allowed_emulators': {'gem5'}},
+                            }
+                        ),
+                    },
+                ),
                 'arch': (
                     {
                         'baremetal': True,
@@ -403,7 +511,7 @@ path_properties_tuples = (
                                 },
                                 'vcvta.S': {
                                     'arm_aarch32': True,
-                                    'gem5_unimplemented_instruction': True,
+                                    'uses_instructions': {'arm': {'vcvta'}}
                                 },
                             }
                         ),
@@ -417,13 +525,41 @@ path_properties_tuples = (
                                     },
                                     {
                                         'freestanding': freestanding_properties,
+                                        'futex_sev.cpp': {'more_than_1s': True},
                                         'sve_addvl.c': {'arm_sve': True},
+                                        'wfe_sev.c': {
+                                            # gem5 bug, WFE not waking up on syscall emulation,
+                                            # TODO link to bug report.
+                                            'more_than_1s': True,
+                                            'test_run_args': {
+                                                'cpus': 2,
+                                            },
+                                        },
                                     },
                                 ),
-                                'freestanding': freestanding_properties,
+                                'freestanding': (
+                                    freestanding_properties,
+                                    {
+                                        'linux': (
+                                            {},
+                                            {
+                                                'gem5_exit.S': {'allowed_emulators': {'gem5'}},
+                                                'wfe.S': {'more_than_1s': True},
+                                                'wfe_wfe.S': {'more_than_1s': True},
+                                            }
+                                        ),
+                                    }
+                                ),
                                 'lkmc_assert_eq_fail.S': {'signal_received': signal.Signals.SIGABRT},
                                 'lkmc_assert_memcmp_fail.S': {'signal_received': signal.Signals.SIGABRT},
-                                'nostartfiles': nostartfiles_properties,
+                                'nostartfiles': (
+                                    nostartfiles_properties,
+                                    {
+                                        # https://github.com/cirosantilli/linux-kernel-module-cheat/issues/107
+                                        'exit.S': {'skip_run_unclassified': True},
+                                        'wfe.S': {'more_than_1s': True},
+                                    }
+                                ),
                                 'udf.S': {
                                     'signal_generated_by_os': True,
                                     'signal_received': signal.Signals.SIGILL,
@@ -450,32 +586,41 @@ path_properties_tuples = (
                                     {},
                                     {
                                         'freestanding': freestanding_properties,
+                                        'sqrt_x87.c': {'uses_instructions': {'x86_64': {'fsqrt'}}},
                                     }
                                 ),
                                 'intrinsics': (
                                     {},
                                     {
-                                        'rdtscp.c': {
-                                            'gem5_unimplemented_instruction': True,
-                                            'qemu_unimplemented_instruction': True,
-                                        },
+                                        'rdtscp.c': {'uses_instructions': {'x86_64': {'rdtscp'}}},
+                                    }
+                                ),
+                                'nostartfiles': (
+                                    nostartfiles_properties,
+                                    {
+                                        # https://github.com/cirosantilli/linux-kernel-module-cheat/issues/107
+                                        'exit.S': {'skip_run_unclassified': True},
                                     }
                                 ),
                                 'div_overflow.S': {'signal_received': signal.Signals.SIGFPE},
                                 'div_zero.S': {'signal_received': signal.Signals.SIGFPE},
+                                'fabs.S': {'uses_instructions': {'x86_64': {'fcomip'}}},
+                                'fadd.S': {'uses_instructions': {'x86_64': {'fcomi'}}},
+                                'faddp.S': {'uses_instructions': {'x86_64': {'fcomip'}}},
+                                'fchs.S': {'uses_instructions': {'x86_64': {'fcomip'}}},
+                                'fild.S': {'uses_instructions': {'x86_64': {'fcomip'}}},
+                                'fld1.S': {'uses_instructions': {'x86_64': {'fcomip'}}},
+                                'fldz.S': {'uses_instructions': {'x86_64': {'fcomip'}}},
+                                'fscale.S': {'uses_instructions': {'x86_64': {'fcomip'}}},
+                                'fsqrt.S': {'uses_instructions': {'x86_64': {'fcomip', 'fsqrt'}}},
+                                'fxch.S': {'uses_instructions': {'x86_64': {'fcomip'}}},
                                 'lkmc_assert_eq_fail.S': {'signal_received': signal.Signals.SIGABRT},
                                 'lkmc_assert_memcmp_fail.S': {'signal_received': signal.Signals.SIGABRT},
-                                'popcnt.S': {'qemu_unimplemented_instruction': True},
-                                'rdrand.S': {
-                                    'gem5_unimplemented_instruction': True,
-                                    'qemu_unimplemented_instruction': True,
-                                },
-                                'rdtscp.S': {'qemu_unimplemented_instruction': True},
+                                'popcnt.S': {'uses_instructions': {'x86_64': {'popcnt'}}},
+                                'rdrand.S': {'uses_instructions': {'x86_64': {'rdrand'}}},
+                                'rdtscp.S': {'uses_instructions': {'x86_64': {'rdtscp'}}},
                                 'ring0.c': {'signal_received': signal.Signals.SIGSEGV},
-                                'vfmadd132pd.S': {
-                                    'gem5_unimplemented_instruction': True,
-                                    'qemu_unimplemented_instruction': True,
-                                },
+                                'vfmadd132pd.S': {'uses_instructions': {'x86_64': {'vfmadd132pd'}}},
                             }
                         ),
                         'lkmc_assert_fail.S': {
@@ -489,7 +634,10 @@ path_properties_tuples = (
                     },
                     {
                         'abort.c': {'signal_received': signal.Signals.SIGABRT},
-                        'atomic.c': {'baremetal': False},
+                        'atomic.c': {
+                            'baremetal': False,
+                            'test_run_args': {'cpus': 3},
+                        },
                         'assert_fail.c': {'signal_received': signal.Signals.SIGABRT},
                         # This has complex failure modes, too hard to assert.
                         'smash_stack.c': {'skip_run_unclassified': True},
@@ -506,21 +654,28 @@ path_properties_tuples = (
                 'cpp': (
                     {},
                     {
-                        'atomic.cpp': {
-                            'test_run_args': {'cpus': 3},
-                            # LDADD from LSE
-                            # https://cirosantilli.com/linux-kernel-module-cheat#arm-lse
-                            # Implemented on master:
-                            # https://gem5-review.googlesource.com/c/public/gem5/+/19812
-                            'gem5_unimplemented_instruction': True,
-                        },
+                        'atomic': (
+                            {
+                                'test_run_args': {'cpus': 3},
+                            },
+                            {
+                                'aarch64_add.cpp': {'allowed_archs': {'aarch64'}},
+                                'aarch64_ldadd.cpp': {'allowed_archs': {'aarch64'}},
+                                'aarch64_ldaxr_stlxr.cpp': {'allowed_archs': {'aarch64'}},
+                                'x86_64_inc.cpp': {'allowed_archs': {'x86_64'}},
+                                'x86_64_lock_inc.cpp': {'allowed_archs': {'x86_64'}},
+                            },
+                        ),
                         'count.cpp': {'more_than_1s': True},
-                        # Need to pass -lstdc++fs but we don't have a mechanism
-                        # to test the GCC version and only pass if >= 7.
-                        'temporary_directory.cpp': {'no_build': True},
+                        'parallel_sort.cpp': {'minimum_gcc_version': (9, 0, 0)},
                         'sleep_for.cpp': {
                             'more_than_1s': True,
                         },
+                        # Need to pass -lstdc++fs but we don't have a mechanism
+                        # to test the GCC version and only pass if >= 7.
+                        'temporary_directory.cpp': {'no_build': True},
+                        'thread_get_id.cpp': {'test_run_args': {'cpus': 2}},
+                        'thread_return_value.cpp': {'test_run_args': {'cpus': 2}},
                     },
                 ),
                 'gcc': (
@@ -541,9 +696,21 @@ path_properties_tuples = (
                     gnu_extension_properties,
                     {
                         'ctrl_alt_del.c': {'requires_sudo': True},
+                        'futex.c': {
+                            'more_than_1s': True,
+                            'test_run_args': {'cpus': 2},
+                        },
                         'init_env_poweroff.c': {'requires_sudo': True},
+                        'mmap_anonymous_touch.c': {
+                            # https://github.com/cirosantilli/linux-kernel-module-cheat/issues/103
+                            'gem5_unimplemented_syscall': True
+                        },
                         'myinsmod.c': {'requires_sudo': True},
                         'myrmmod.c': {'requires_sudo': True},
+                        'open_o_tmpfile.c': {
+                            # https://github.com/cirosantilli/linux-kernel-module-cheat/issues/100
+                            'gem5_unimplemented_syscall': True
+                        },
                         'pagemap_dump.c': {'requires_argument': True},
                         'poweroff.c': {'requires_sudo': True},
                         'proc_events.c': {'requires_sudo': True},
@@ -566,15 +733,26 @@ path_properties_tuples = (
                             'baremetal': True,
                             'signal_received': signal.Signals.SIGHUP,
                         },
+                        'fork.c': {
+                            # wait
+                            'gem5_unimplemented_syscall': True
+                        },
+                        'mmap_file.c': {
+                            # https://github.com/cirosantilli/linux-kernel-module-cheat/issues/102
+                            'gem5_unimplemented_syscall': True
+                        },
                         'pthread_count.c': {
                             'more_than_1s': True,
                             'test_run_args': {'cpus': 2},
                         },
+                        'pthread_mutex.c': {
+                            'test_run_args': {'cpus': 3},
+                        },
                         'pthread_self.c': {
                             'test_run_args': {'cpus': 2},
                         },
-                        'wget.c': {'requires_internet': True},
                         'sleep_forever.c': {'more_than_1s': True},
+                        'wget.c': {'requires_internet': True},
                         'virt_to_phys_test.c': {'more_than_1s': True},
                     }
                 ),

@@ -29,6 +29,10 @@
  * ....
  *
  * Note how the PID is the same for all threads.
+ *
+ * There is then a Linux specific gettid which returns a really unique thread ID:
+ * https://stackoverflow.com/questions/9305992/if-threads-share-the-same-pid-how-can-they-be-identified#comment42637433_9306150
+ * man gettid says that this value is different than pthread_self.
  */
 
 #define _XOPEN_SOURCE 700
@@ -57,7 +61,7 @@ void* main_thread(void *arg) {
 
 int main(int argc, char**argv) {
     pthread_t *threads;
-    unsigned int nthreads, i, *thread_args;
+    unsigned int nthreads, nwaves, i, *thread_args, wave;
     int rc;
 
     /* CLI arguments. */
@@ -66,41 +70,48 @@ int main(int argc, char**argv) {
     } else {
         nthreads = 1;
     }
+    if (argc > 2) {
+        nwaves = strtoll(argv[2], NULL, 0);
+    } else {
+        nwaves = 1;
+    }
     threads = malloc(nthreads * sizeof(*threads));
     thread_args = malloc(nthreads * sizeof(*thread_args));
 
-    /* main thread for comparison. */
-    printf(
-        "tid, getpid(), pthread_self() = "
-        "main, %ju, %ju\n",
-        (uintmax_t)getpid(),
-        (uintmax_t)pthread_self()
-    );
-
-    /* Create all threads */
-    for (i = 0; i < nthreads; ++i) {
-        thread_args[i] = i;
-        rc = pthread_create(
-            &threads[i],
-            NULL,
-            main_thread,
-            (void*)&thread_args[i]
+    for (wave = 0; wave < nwaves; wave++) {
+        /* main thread for comparison. */
+        printf(
+            "tid, getpid(), pthread_self() = "
+            "main, %ju, %ju\n",
+            (uintmax_t)getpid(),
+            (uintmax_t)pthread_self()
         );
-        if (rc != 0) {
-            errno = rc;
-            perror("pthread_create");
-            exit(EXIT_FAILURE);
-        }
-        assert(rc == 0);
-        printf("%d tid: %ju\n", i, (uintmax_t)threads[i]);
-    }
 
-    /* Wait for all threads to complete */
-    for (i = 0; i < nthreads; ++i) {
-        rc = pthread_join(threads[i], NULL);
-        if (rc != 0) {
-            printf("%s\n", strerror(rc));
-            exit(EXIT_FAILURE);
+        /* Create all threads */
+        for (i = 0; i < nthreads; ++i) {
+            thread_args[i] = i;
+            rc = pthread_create(
+                &threads[i],
+                NULL,
+                main_thread,
+                (void*)&thread_args[i]
+            );
+            if (rc != 0) {
+                errno = rc;
+                perror("pthread_create");
+                exit(EXIT_FAILURE);
+            }
+            assert(rc == 0);
+            printf("%d tid: %ju\n", i, (uintmax_t)threads[i]);
+        }
+
+        /* Wait for all threads to complete */
+        for (i = 0; i < nthreads; ++i) {
+            rc = pthread_join(threads[i], NULL);
+            if (rc != 0) {
+                printf("%s\n", strerror(rc));
+                exit(EXIT_FAILURE);
+            }
         }
     }
 

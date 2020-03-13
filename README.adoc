@@ -1,4 +1,5 @@
 = Linux Kernel Module Cheat
+:cirosantilli-media-base: https://raw.githubusercontent.com/cirosantilli/media/master/
 :description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.4.3, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>. Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 19.10 host.
 :idprefix:
 :idseparator: -
@@ -611,11 +612,7 @@ If you have already built previously, don't be afraid: gem5 and QEMU use almost 
 
 Remember that the gem5 boot is <<benchmark-linux-kernel-boot,considerably slower>> than QEMU since the simulation is more detailed.
 
-gem5 moves a bit slowly, and if your host compiler is very new, the build might be broken for it, e.g. this was the case for Ubuntu 19.10 with GCC 9 and gem5 62d75e7105fe172eb906d4f80f360ff8591d4178 from Dec 2019. You can work around that by https://askubuntu.com/questions/466651/how-do-i-use-the-latest-gcc-on-ubuntu/1163021#1163021[installing an older compiler] and using it with something like:
-
-....
-./build-gem5 -- CC=gcc-8 CXX=g++-8
-....
+If you have a relatively new GCC version and the gem5 build fails on your machine, see: <<gem5-build-broken-on-recent-compiler-version>>.
 
 To get a terminal, either open a new shell and run:
 
@@ -3783,7 +3780,7 @@ Here is an interesting examples of this: xref:linux-test-project[xrefstyle=full]
 
 At 125d14805f769104f93c510bedaa685a52ec025d we <<libc-choice,moved Buildroot from uClibc to glibc>>, and caused some user mode pain, which we document here.
 
-==== FATAL: kernel too old
+==== FATAL: kernel too old failure in userland simulation
 
 glibc has a check for kernel version, likely obtained from the `uname` syscall, and if the kernel is not new enough, it quits.
 
@@ -3809,7 +3806,7 @@ Bibliography:
 
 The ID is just hardcoded on the source:
 
-==== stack smashing detected
+==== stack smashing detected when using glibc
 
 For some reason QEMU / glibc x86_64 picks up the host libc, which breaks things.
 
@@ -3871,7 +3868,7 @@ We pass `-L` by default, so everything just works.
 
 However, in case something goes wrong, you can also try statically linked executables, since this mechanism tends to be a bit more stable, for example:
 
-* QEMU x86_64 guest on x86_64 host was failing with <<stack-smashing-detected>>, but we found a workaround
+* QEMU x86_64 guest on x86_64 host was failing with <<stack-smashing-detected-when-using-glibc>>, but we found a workaround
 * gem5 user only supported static executables in the past, as mentioned at: xref:gem5-syscall-emulation-mode[xrefstyle=full]
 
 Running statically linked executables sometimes makes things break:
@@ -10641,6 +10638,10 @@ On the other hand, the chip makers tend to upstream less, and the project become
 The only hairy thing in QEMU is the binary code generation.
 +
 gem5 however has tended towards horrendous intensive <<gem5-code-generation,code generation>> in order to support all its different hardware types
++
+gem5 also has a complex Python interface which is also largely auto-generated, which greatly increases the maintenance complexity of the project: <<embedding-python-in-another-application>>.
++
+This is done so that reconfiguring platforms can be done quickly without recompiling, and it is amazing when it works, but the maintenance costs are also very high. For example, <<pybind11>> of several trivial `param_` files accounted for 50% of the build time at one point: <<pybind11-accounts-for-50-of-gem5-build-time>>.
 
 === gem5 run benchmark
 
@@ -10820,15 +10821,17 @@ At 369a47fc6e5c2f4a7f911c1c058b6088f8824463 + 1 QEMU appears to spawn 3 host thr
 
 ====== gem5 syscall emulation multithreading
 
-gem5 user mode multithreading has been particularly flaky compared <<qemu-user-mode-multithreading,to QEMU's>>.
+gem5 user mode multithreading has been particularly flaky compared <<qemu-user-mode-multithreading,to QEMU's>>, but work is being put into improving it.
 
-You have the limitation that you must have at least one core per guest thread, otherwise `pthread_create` fails. For example:
+In gem5 syscall simulation, the `fork` syscall checks if there is a free CPU, and if there is a free one, the new threads runs on that CPU. Otherwise, the `fork` call, and therefore higher level interfaces to `fork` such as `pthread_create` also fail and return a failure return status in the guest.
+
+For example, if we use just one CPU for link:userland/posix/pthread_self.c[] which spawns one thread besides `main`:
 
 ....
 ./run --cpus 1 --emulator gem5 --userland userland/posix/pthread_self.c --userland-args 1
 ....
 
-fails because that process has a total of 2 threads: one for `main` and one extra thread spawned: link:userland/posix/pthread_self.c[] The error message is:
+fails with this error message coming from the guest stderr:
 
 ....
 pthread_create: Resource temporarily unavailable
@@ -10840,9 +10843,15 @@ It works however if we add on extra CPU:
 ./run --cpus 2 --emulator gem5 --userland userland/posix/pthread_self.c --userland-args 1
 ....
 
-This has to do with the fact that gem5 has a more simplistic thread implementation that does not spawn one host thread per guest thread CPU. Maybe this is required to achieve reproducible runs? What is the task switch algorithm then?
+Once threads exit, their CPU is freed and becomes available for new `fork` calls: For example, the following run spawns a thread, joins it, and then spawns again, and 2 CPUs are enough:
 
-gem5 threading does however show the expected number of cores, e.g.:
+....
+./run --cpus 2 --emulator gem5 --userland userland/posix/pthread_self.c --userland-args '1 2'
+....
+
+because at each point in time, only up to two threads are running.
+
+gem5 syscall emulation does show the expected number of cores when queried, e.g.:
 
 ....
 ./run --cpus 1 --userland userland/cpp/thread_hardware_concurrency.cpp --emulator gem5
@@ -10850,18 +10859,6 @@ gem5 threading does however show the expected number of cores, e.g.:
 ....
 
 outputs `1` and `2` respectively.
-
-TODO: aarch64 seems to failing to spawn more than 2 threads at 369a47fc6e5c2f4a7f911c1c058b6088f8824463 + 1:
-
-....
-./run --arch aarch64 --cpus 3 --emulator gem5 --userland userland/posix/pthread_self.c --userland-args 2
-....
-
-fails with:
-
-....
-Exiting @ tick 18446744073709551615 because simulate() limit reached
-....
 
 ====== gem5 se.py user mode with 2 or more pthreads fails with because simulate() limit reached
 
@@ -10885,6 +10882,8 @@ Build the kernel with the <<gem5-arm-linux-kernel-patches>>, and then run:
   --param 'system.realview.gic.gem5_extensions = True' \
 ;
 ....
+
+Tested in LKMC 788087c6f409b84adf3cff7ac050fa37df6d4c46. It fails after boot with `FATAL: kernel too old` as mentioned at: <<gem5-arm-linux-kernel-patches>> but everything seems to work on the gem5 side of things.
 
 ===== gem5 cache size
 
@@ -11211,8 +11210,10 @@ Analogous to QEMU's <<snapshot>>, but better since it can be started from inside
 
 Documentation: http://gem5.org/Checkpoints
 
+To see it in action try:
+
 ....
-./run --arch arm --emulator gem5
+./run --arch aarch64 --emulator gem5
 ....
 
 In the guest, wait for the boot to end and run:
@@ -11267,6 +11268,50 @@ Then there is no need to pass the kernel command line again to gem5 for replay:
 ....
 
 since boot has already happened, and the parameters are already in the RAM of the snapshot.
+
+==== gem5 checkpoint userland minimal example
+
+In order to debug checkpoint restore bugs, this minimal setup using link:userland/freestanding/gem5_checkpoint_restore.S[] can be handy:
+
+....
+./build-userland --arch aarch64 --static
+./run --arch aarch64 --emulator gem5 --static --userland userland/freestanding/gem5_checkpoint_restore.S --trace-insts-stdout
+./run --arch aarch64 --emulator gem5 --static --userland userland/freestanding/gem5_checkpoint_restore.S --trace-insts-stdout --gem5-restore 1
+./run --arch aarch64 --emulator gem5 --static --userland userland/freestanding/gem5_checkpoint_restore.S --trace-insts-stdout --gem5-restore 1 -- --cpu-type=DerivO3CPU --restore-with-cpu=DerivO3CPU --caches
+....
+
+On the initial run, we see that all instructions are executed and the checkpoint is taken:
+
+....
+      0: system.cpu: A0 T0 : @asm_main_after_prologue    :   movz   x0, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+    500: system.cpu: A0 T0 : @asm_main_after_prologue+4    :   movz   x1, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+   1000: system.cpu: A0 T0 : @asm_main_after_prologue+8    :   m5checkpoint             : IntAlu :   flags=(IsInteger|IsNonSpeculative|IsUnverifiable)
+Writing checkpoint
+warn: Checkpoints for file descriptors currently do not work.
+info: Entering event queue @ 1000.  Starting simulation...
+   1500: system.cpu: A0 T0 : @asm_main_after_prologue+12    :   movz   x0, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+   2000: system.cpu: A0 T0 : @asm_main_after_prologue+16    :   m5exit                   : No_OpClass :   flags=(IsInteger|IsNonSpeculative)
+Exiting @ tick 2000 because m5_exit instruction encountered
+....
+
+Then, on the first restore run, the checkpoint is restored, and only instructions after the checkpoint are executed:
+
+....
+info: Entering event queue @ 1000.  Starting simulation...
+   1500: system.cpu: A0 T0 : @asm_main_after_prologue+12    :   movz   x0, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+   2000: system.cpu: A0 T0 : @asm_main_after_prologue+16    :   m5exit                   : No_OpClass :   flags=(IsInteger|IsNonSpeculative)
+Exiting @ tick 2000 because m5_exit instruction encountered
+....
+
+and a similar thing happens for the <<gem5-restore-checkpoint-with-a-different-cpu,restore with a different CPU type>>:
+
+....
+info: Entering event queue @ 1000.  Starting simulation...
+  79000: system.cpu: A0 T0 : @asm_main_after_prologue+12    :   movz   x0, #0, #0        : IntAlu :  D=0x0000000000000000  FetchSeq=1  CPSeq=1  flags=(IsInteger)
+Exiting @ tick 84500 because m5_exit instruction encountered
+....
+
+Here we don't see the last `m5 exit` instruction on the log, but it must just be something to do with the O3 logging.
 
 ==== gem5 checkpoint internals
 
@@ -11396,23 +11441,184 @@ gem5 can switch to a different CPU model when restoring a checkpoint.
 
 A common combo is to boot Linux with a fast CPU, make a checkpoint and then replay the benchmark of interest with a slower CPU.
 
-An illustrative interactive run:
+This can be observed interactively in full system with:
 
 ....
-./run --arch arm --emulator gem5
+./run --arch aarch64 --emulator gem5
 ....
 
-In guest:
+Then in the guest terminal after boot ends:
 
 ....
-m5 checkpoint
+sh -c 'm5 checkpoint;sh'
+m5 exit
 ....
 
-And then restore the checkpoint with a different CPU:
+And then restore the checkpoint with a different slower CPU:
 
 ....
-./run --arch arm --emulator gem5 --gem5-restore 1 -- --caches --restore-with-cpu=HPI
+./run --arch arm --emulator gem5 --gem5-restore 1 -- --caches --cpu-type=DerivO3CPU
 ....
+
+And now you will notice that everything happens much slower in the guest terminal!
+
+One even more direct and minimal way to observe this is with link:userland/freestanding/gem5_checkpoint_restore.S[] which was mentioned at <<gem5-checkpoint-userland-minimal-example>> plus some logging:
+
+....
+./run \
+  --arch aarch64 \
+  --emulator gem5 \
+  --static \
+  --trace ExecAll,FmtFlag,O3CPU,SimpleCPU \
+  --userland userland/freestanding/gem5_checkpoint_restore.S \
+;
+cat "$(./getvar --arch aarch64 --emulator gem5 trace_txt_file)"
+./run \
+  --arch aarch64 \
+  --emulator gem5 \
+  --gem5-restore 1 \
+  --static \
+  --trace ExecAll,FmtFlag,O3CPU,SimpleCPU \
+  --userland userland/freestanding/gem5_checkpoint_restore.S \
+  -- \
+  --caches \
+  --cpu-type DerivO3CPU \
+  --restore-with-cpu DerivO3CPU \
+;
+cat "$(./getvar --arch aarch64 --emulator gem5 trace_txt_file)"
+....
+
+At gem5 2235168b72537535d74c645a70a85479801e0651, the first run does everything in <<gem5-basesimplecpu,AtomicSimpleCPU>>:
+
+....
+...
+      0: SimpleCPU: system.cpu.dcache_port: received snoop pkt for addr:0x1f92 WriteReq
+      0: SimpleCPU: system.cpu.dcache_port: received snoop pkt for addr:0x1e40 WriteReq
+      0: SimpleCPU: system.cpu.dcache_port: received snoop pkt for addr:0x1e30 WriteReq
+      0: SimpleCPU: system.cpu: Tick
+      0: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue    :   movz   x0, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+    500: SimpleCPU: system.cpu: Tick
+    500: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+4    :   movz   x1, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+   1000: SimpleCPU: system.cpu: Tick
+   1000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+8    :   m5checkpoint             : IntAlu :   flags=(IsInteger|IsNonSpeculative|IsUnverifiable)
+   1000: SimpleCPU: system.cpu: Resume
+   1500: SimpleCPU: system.cpu: Tick
+   1500: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+12    :   movz   x0, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+   2000: SimpleCPU: system.cpu: Tick
+   2000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+16    :   m5exit                   : No_OpClass :   flags=(IsInteger|IsNonSpeculative)
+....
+
+and after restore we see as expected a single `ExecEnable` instruction executed amidst `O3CPU` noise:
+
+....
+FullO3CPU: Ticking main, FullO3CPU.
+  79000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+12    :   movz   x0, #0, #0        : IntAlu :  D=0x0000000000000000  FetchSeq=1  CPSeq=1  flags=(IsInteger)
+  82500: O3CPU: system.cpu: Removing committed instruction [tid:0] PC (0x400084=>0x400088).(0=>1) [sn:1]
+  82500: O3CPU: system.cpu: Removing instruction, [tid:0] [sn:1] PC (0x400084=>0x400088).(0=>1)
+  82500: O3CPU: system.cpu: Scheduling next tick!
+  83000: O3CPU: system.cpu:
+....
+
+which is the `movz` after the checkpoint. The final `m5exit` does not appear due to DerivO3CPU logging insanity.
+
+Bibliography:
+
+* https://stackoverflow.com/questions/49011096/how-to-switch-cpu-models-in-gem5-after-restoring-a-checkpoint-and-then-observe-t
+
+===== gem5 fast forward
+
+Besides switching CPUs after a checkpoint restore, fs.py also has the `--fast-forward` option to automatically run the script from the start on a less detailed CPU, and switch to a more detailed CPU at a given tick.
+
+This is generally useless compared to checkpoint restoring because:
+
+* checkpoint restore allows to run multiple contents after the restore, and restoring to multiple different system states, which you almost always want to do
+* we generally don't know the exact tick at which the region of interest will start, especially as the binaries change. It is much easier to just instrument the content with a checkoint <<m5ops,m5op>>
+
+But let's give it a try anyways with link:userland/freestanding/gem5_checkpoint_restore.S[] which was mentioned at <<gem5-checkpoint-userland-minimal-example>>
+
+....
+./run \
+  --arch aarch64 \
+  --emulator gem5 \
+  --static \
+  --trace ExecAll,FmtFlag,O3CPU,SimpleCPU \
+  --userland userland/freestanding/gem5_checkpoint_restore.S \
+  -- \
+  --caches
+  --cpu-type DerivO3CPU \
+  --fast-forward 1000 \
+;
+cat "$(./getvar --arch aarch64 --emulator gem5 trace_txt_file)"
+....
+
+At gem5 2235168b72537535d74c645a70a85479801e0651 we see something like:
+
+....
+      0: O3CPU: system.switch_cpus: Creating O3CPU object.
+      0: O3CPU: system.switch_cpus: Workload[0] process is 0      0: SimpleCPU: system.cpu: ActivateContext 0
+      0: SimpleCPU: system.cpu.dcache_port: received snoop pkt for addr:0 WriteReq
+      0: SimpleCPU: system.cpu.dcache_port: received snoop pkt for addr:0x40 WriteReq
+...
+
+      0: SimpleCPU: system.cpu.dcache_port: received snoop pkt for addr:0x1f92 WriteReq
+      0: SimpleCPU: system.cpu.dcache_port: received snoop pkt for addr:0x1e40 WriteReq
+      0: SimpleCPU: system.cpu.dcache_port: received snoop pkt for addr:0x1e30 WriteReq
+      0: SimpleCPU: system.cpu: Tick
+      0: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue    :   movz   x0, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+    500: SimpleCPU: system.cpu: Tick
+    500: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+4    :   movz   x1, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+   1000: SimpleCPU: system.cpu: Tick
+   1000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+8    :   m5checkpoint             : IntAlu :   flags=(IsInteger|IsNonSpeculative|IsUnverifiable)
+   1000: O3CPU: system.switch_cpus: [tid:0] Calling activate thread.
+   1000: O3CPU: system.switch_cpus: [tid:0] Adding to active threads list
+   1500: O3CPU: system.switch_cpus:
+
+FullO3CPU: Ticking main, FullO3CPU.
+   1500: O3CPU: system.switch_cpus: Scheduling next tick!
+   2000: O3CPU: system.switch_cpus:
+
+FullO3CPU: Ticking main, FullO3CPU.
+   2000: O3CPU: system.switch_cpus: Scheduling next tick!
+   2500: O3CPU: system.switch_cpus:
+
+...
+
+FullO3CPU: Ticking main, FullO3CPU.
+  44500: ExecEnable: system.switch_cpus: A0 T0 : @asm_main_after_prologue+12    :   movz   x0, #0, #0        : IntAlu :  D=0x00000000000
+  48000: O3CPU: system.switch_cpus: Removing committed instruction [tid:0] PC (0x400084=>0x400088).(0=>1) [sn:1]
+  48000: O3CPU: system.switch_cpus: Removing instruction, [tid:0] [sn:1] PC (0x400084=>0x400088).(0=>1)
+  48000: O3CPU: system.switch_cpus: Scheduling next tick!
+  48500: O3CPU: system.switch_cpus:
+
+...
+....
+
+We can also compare that to the same log but without `--fast-forward` and other CPU switch options:
+
+....
+      0: SimpleCPU: system.cpu.dcache_port: received snoop pkt for addr:0x1e40 WriteReq
+      0: SimpleCPU: system.cpu.dcache_port: received snoop pkt for addr:0x1e30 WriteReq
+      0: SimpleCPU: system.cpu: Tick
+      0: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue    :   movz   x0, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+    500: SimpleCPU: system.cpu: Tick
+    500: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+4    :   movz   x1, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+   1000: SimpleCPU: system.cpu: Tick
+   1000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+8    :   m5checkpoint             : IntAlu :   flags=(IsInteger|IsNonSpeculative|IsUnverifiable)
+   1000: SimpleCPU: system.cpu: Resume
+   1500: SimpleCPU: system.cpu: Tick
+   1500: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+12    :   movz   x0, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+   2000: SimpleCPU: system.cpu: Tick
+   2000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+16    :   m5exit                   : No_OpClass :   flags=(IsInteger|IsNonSpeculative)
+....
+
+Therefore, it is clear that what we wanted happen:
+
+* up until the tick 1000, `SimpleCPU` was ticking
+* after tick 1000, cpu `O3CPU` started ticking
+
+Bibliography:
+
+* https://cs.stackexchange.com/questions/69511/what-does-fast-forwarding-mean-in-the-context-of-cpu-simulation
 
 === Pass extra options to gem5
 
@@ -11770,13 +11976,13 @@ but glibc kernel version checks make init fail with:
 FATAL: kernel too old
 ....
 
-because glibc was built to expect a newer Linux kernel as shown at: xref:fatal-kernel-too-old[xrefstyle=full]. Your choices to sole this are:
+because glibc was built to expect a newer Linux kernel as shown at: xref:fatal-kernel-too-old-failure-in-userland-simulation[xrefstyle=full]. Your choices to solve this are:
 
 * see if there is a more recent gem5 kernel available, or port your patch of interest to the newest kernel
 * modify this repo to use <<libc-choice,uClibc>>, which is not hard because of Buildroot
 * patch glibc to remove that check, which is easy because glibc is in a submodule of this repo
 
-It is obviously not possible to understand what they actually do from their commit message, so let's explain them one by one here as we understand them:
+It is obviously not possible to understand what the Linux kernel fork commits actually do from their commit message, so let's explain them one by one here as we understand them:
 
 * `drm: Add component-aware simple encoder` allows you to see images through VNC, see: xref:gem5-graphic-mode[xrefstyle=full]
 * `gem5: Add support for gem5's extended GIC mode` adds support for more than 8 cores, see: xref:gem5-arm-full-system-with-more-than-8-cores[xrefstyle=full]
@@ -11885,7 +12091,7 @@ Each node has:
 
 * a list of child nodes, e.g. `system` is a child of `root`, and both `cpu` and `cpu_clk_domain` are children of `system`
 * a list of parameters, e.g. `system.semihosting` is `Null`, which means that <<semihosting>> was turned off
-** the `type` parameter shows is present on every node, and it maps to a `Python` object that inherits from `SimObject`.
+    ** the `type` parameter shows is present on every node, and it maps to a `Python` object that inherits from <<gem5-python-c-interaction,`SimObject`>>.
 +
 For example, `AtomicSimpleCPU` maps is defined at https://github.com/gem5/gem5/blob/05c4c2b566ce351ab217b2bd7035562aa7a76570/src/cpu/simple/AtomicSimpleCPU.py#L45[src/cpu/simple/AtomicSimpleCPU.py].
 
@@ -11963,9 +12169,15 @@ TODO: why is the `--dtb` required despite `fs_bigLITTLE.py` having a DTB generat
 
 Tested on: https://github.com/cirosantilli/linux-kernel-module-cheat/commit/18c1c823feda65f8b54cd38e261c282eee01ed9f[18c1c823feda65f8b54cd38e261c282eee01ed9f]
 
-=== gem5 unit tests
+=== gem5 in-tree tests
 
 https://stackoverflow.com/questions/52279971/how-to-run-the-gem5-unit-tests
+
+All those tests could in theory be added to this repo instead of to gem5, and this is actually the superior setup as it is cross emulator.
+
+But can the people from the project be convinced of that?
+
+==== gem5 unit tests
 
 These are just very small GTest tests that test a single class in isolation, they don't run any executables.
 
@@ -12009,7 +12221,9 @@ This does not run the test however.
 
 Note that the command and it's corresponding results don't need to show consecutively on stdout because tests are run in parallel. You just have to match them based on the class name `CircleBufTest` to the file `circlebuf.test.cpp`.
 
-=== gem5 regression tests
+==== gem5 regression tests
+
+This section is about running the gem5 in-tree tests.
 
 https://stackoverflow.com/questions/52279971/how-to-run-the-gem5-unit-tests
 
@@ -12020,13 +12234,25 @@ Running the larger 2019 regression tests is exposed for example with:
 ./gem5-regression --arch aarch64 -- --length quick --length long
 ....
 
-After the first run has downloaded the test binaries for you, you can speed up the process a little bit by skipping an useless scons call:
+After the first run has downloaded the test binaries for you, you can speed up the process a little bit by skipping an useless SCons call:
 
 ....
 ./gem5-regression --arch aarch64 -- --length quick --length long --skip-build
 ....
 
-Note however that `--skip-build` is required at least once per branch to download the test binaries, because the test interface is bad.
+Note however that running without `--skip-build` is required at least once to download the test binaries, because the test interface is bad.
+
+List available instead of running them:
+
+....
+./gem5-regression --arch aarch64 --cmd list
+....
+
+You can then pick one suite (has to be a suite, not an "individual test") from the list and run just it e.g. with:
+
+....
+./gem5-regression --arch aarch64 -- --uid SuiteUID:tests/gem5/cpu_tests/test.py:cpu_test_AtomicSimpleCPU_Bubblesort-ARM-opt
+....
 
 === gem5 simulate() limit reached
 
@@ -12137,6 +12363,27 @@ In order to use different build options, you might also want to use <<gem5-build
 
 Explained at: xref:debug-the-emulator[xrefstyle=full].
 
+==== gem5 fast build
+
+....
+./build-gem5 --gem5-build-type fast
+....
+
+How it goes faster is explained at: https://stackoverflow.com/questions/59860091/how-to-increase-the-simulation-speed-of-a-gem5-run/59861375#59861375
+
+Benchmarks present at:
+
+* xref:benchmark-emulators-on-userland-executables[xrefstyle=full]
+
+==== gem5 prof and perf builds
+
+Profiling builds as of 3cea7d9ce49bda49c50e756339ff1287fd55df77 both use: `-g -O3` and disable asserts and logging like the <<gem5-fast-build>> and:
+
+* `prof` uses `-pg` for gprof
+* `perf` uses `-lprofile` for google-pprof
+
+See also: <<profiling-userland-programs>>.
+
 ==== gem5 clang build
 
 TODO test properly, benchmark vs GCC.
@@ -12183,20 +12430,29 @@ Direct leak of 2928 byte(s) in 43 object(s) allocated from:
 Direct leak of 2002 byte(s) in 3 object(s) allocated from:
     #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)
     #1 0x7ff0394fd813 in PyString_FromStringAndSize ../Objects/stringobject.c:88
-    #2 0x7ff0394fd813 in PyString_FromStringAndSize ../Objects/stringobject.c:57                                                                                                                                                                                                                                                                                                                                                                                                                                                                                Direct leak of 40 byte(s) in 2 object(s) allocated from:                                                                                                                                                                                                                            #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)
+    #2 0x7ff0394fd813 in PyString_FromStringAndSize ../Objects/stringobject.c:
+    Direct leak of 40 byte(s) in 2 object(s) allocated from
+    #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)
     #1 0x7ff03951ea4b in PyList_New ../Objects/listobject.c:152
 
-Indirect leak of 10384 byte(s) in 11 object(s) allocated from:                                                                                                                                                                                                                      #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)                                                                                                                                                                                                   #1 0x7ff03945e40d in _PyObject_GC_Malloc ../Modules/gcmodule.c:1499                                                                                                                                                                                                             #2 0x7ff03945e40d in _PyObject_GC_Malloc ../Modules/gcmodule.c:1493
+Indirect leak of 10384 byte(s) in 11 object(s) allocated from
+    #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448
+    #1 0x7ff03945e40d in _PyObject_GC_Malloc ../Modules/gcmodule.c:
+    #2 0x7ff03945e40d in _PyObject_GC_Malloc ../Modules/gcmodule.c:1493
 
 Indirect leak of 4089 byte(s) in 6 object(s) allocated from:
     #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)
     #1 0x7ff0394fd648 in PyString_FromString ../Objects/stringobject.c:143
 
 Indirect leak of 2090 byte(s) in 3 object(s) allocated from:
-    #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)                                                                                                                                                                                                   #1 0x7ff0394eb36f in type_new ../Objects/typeobject.c:2421                                                                                                                                                                                                                      #2 0x7ff0394eb36f in type_new ../Objects/typeobject.c:2094
+    #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448
+    #1 0x7ff0394eb36f in type_new ../Objects/typeobject.c:
+    #2 0x7ff0394eb36f in type_new ../Objects/typeobject.c:2094
 Indirect leak of 1346 byte(s) in 2 object(s) allocated from:
     #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)
-    #1 0x7ff0394fd813 in PyString_FromStringAndSize ../Objects/stringobject.c:88                                                                                                                                                                                                    #2 0x7ff0394fd813 in PyString_FromStringAndSize ../Objects/stringobject.c:57                                                                                                                                                                                                                                                                                                                                                                                                                                                                                SUMMARY: AddressSanitizer: 418319 byte(s) leaked in 203 allocation(s).
+    #1 0x7ff0394fd813 in PyString_FromStringAndSize ../Objects/stringobject.c:
+    #2 0x7ff0394fd813 in PyString_FromStringAndSize ../Objects/stringobject.c:
+    SUMMARY: AddressSanitizer: 418319 byte(s) leaked in 203 allocation(s).
 ....
 
 From the message, this appears however to be a Python / pyenv11 bug however and not in gem5 specifically. I think it worked when I tried it in the past in an older gem5 / Ubuntu.
@@ -12205,13 +12461,33 @@ From the message, this appears however to be a Python / pyenv11 bug however and 
 
 ==== gem5 Ruby build
 
-Ruby is a system that includes the SLICC domain specific language to describe memory systems: http://gem5.org/Ruby
+gem5 has two types of memory system:
 
-It seems to have usage outside of gem5, but the naming overload with the link:https://en.wikipedia.org/wiki/Ruby_(programming_language)[Ruby programming language], which also has link:https://thoughtbot.com/blog/writing-a-domain-specific-language-in-ruby[domain specific languages] as a concept, makes it impossible to google anything about it!
+* the classic memory system, which is used by default
+* the Ruby memory system
 
-Ruby is activated at compile time with the `PROTOCOL` flag, which specifies the desired memory system time.
+The Ruby memory system includes the SLICC domain specific language to describe memory systems: http://gem5.org/Ruby SLICC transpiles to C++ auto-generated files under `build/<isa>/mem/ruby/protocol/`.
 
-For example, to use a two level https://en.wikipedia.org/wiki/MESI_protocol[MESI] https://en.wikipedia.org/wiki/Cache_coherence[cache coherence protocol], we can do:
+Ruby seems to have usage outside of gem5, but the naming overload with the link:https://en.wikipedia.org/wiki/Ruby_(programming_language)[Ruby programming language], which also has link:https://thoughtbot.com/blog/writing-a-domain-specific-language-in-ruby[domain specific languages] as a concept, makes it impossible to google anything about it!
+
+Since it is not the default, Ruby is generally less stable that the classic memory model. However, because it allows describing a wide variety of important <<cache-coherence,cache coherence protocols>>, while the classic system only describes a single protocol, Ruby is very importanonly describes a single protocol, Ruby is a very important feature of gem5.
+
+Ruby support must be enabled at compile time with the `scons PROTOCOL=` flag, which compiles support for the desired memory system type.
+
+Note however that most ISAs already implicitly set `PROTOCOL` via the `build_opts/` directory, e.g. `build_opts/ARM` contains:
+
+....
+PROTOCOL = 'MOESI_CMP_directory'
+....
+
+and therefore ARM already compiles `MOESI_CMP_directory` by default.
+
+Then, with `fs.py` and `se.py`, you can choose to use either the classic or built-in ruby system at runtime with the `--ruby` option:
+
+* if `--ruby` is given, use the ruby memory system that was compiled into gem5. Caches are always present when Ruby is used, since the main goal of Ruby is to specify the cache coherence protocol, and it therefore hardcodes cache hierarchies.
+* otherwise, use the classic memory system. Caches may be optional for certain CPU types and are enabled with `--caches`.
+
+For example, to use a two level <<mesi-cache-coherence-protocol>> we can do:
 
 ....
 ./build-gem5 --arch aarch64 --gem5-build-id ruby -- PROTOCOL=MESI_Two_Level
@@ -12226,21 +12502,79 @@ and during build we see a humongous line of type:
 
 which shows that dozens of C++ files are being generated from Ruby SLICC.
 
-TODO observe it doing something during a run.
-
-The relevant source files live in the source tree under:
+The relevant Ruby source files live in the source tree under:
 
 ....
 src/mem/protocol/MESI_Two_Level*
 ....
 
-We already pass the `SLICC_HTML` flag by default to the build, which generates an HTML summary of each memory protocol under:
+We already pass the `SLICC_HTML` flag by default to the build, which generates an HTML summary of each memory protocol under (TODO broken: https://gem5.atlassian.net/browse/GEM5-357[]):
 
 ....
 xdg-open "$(./getvar --arch aarch64 --gem5-build-id ruby gem5_build_build_dir)/ARM/mem/protocol/html/index.html"
 ....
 
 A minimized ruby config which was not merged upstream can be found for study at: https://gem5-review.googlesource.com/c/public/gem5/+/13599/1
+
+One easy way to see that Ruby is being used without understanding it in detail is to <<gem5-tracing,enable some logging>>:
+
+....
+./run \
+  --arch aarch64 \
+  --emulator gem5 \
+  --gem5-worktree master \
+  --userland userland/arch/aarch64/freestanding/linux/hello.S \
+  --static \
+  --trace ExecAll,FmtFlag,Ruby,XBar \
+  -- \
+  --ruby \
+;
+cat "$(./getvar --arch aarch64 --emulator gem5 trace_txt_file)"
+....
+
+Then:
+
+* when the `--ruby` flag is given, we see a gazillion Ruby related messages prefixed e.g. by `RubyPort:`.
++
+We also observe from `ExecEnable` lines that instruction timing is not simple anymore, so the memory system must have latencies
+* without `--ruby`, we instead see `XBar` (Coherent Crossbar) related messages such as `CoherentXBar:`, which I believe is the more precise name for the memory model that the classic memory system uses: <<gem5-crossbar-interconnect>>.
+
+Certain features may not work in Ruby. For example, <<gem5-checkpoint>> creation is only possible in Ruby protocols that support flush, which is the case for `PROTOCOL=MOESI_hammer` but not `PROTOCOL=MESI_Three_Level`: https://www.mail-archive.com/gem5-users@gem5.org/msg17418.html
+
+Tested in gem5 d7d9bc240615625141cd6feddbadd392457e49eb.
+
+===== gem5 crossbar interconnect
+
+Crossbar or `XBar` in the code, is the default <<cache-coherence,CPU interconnect>> that gets used by `fs.py` if <<gem5-ruby-build,`--ruby`>> is not given.
+
+One simple example of its operation can be seen at: xref:gem5-event-queue-timingsimplecpu-syscall-emulation-freestanding-example-analysis[xrefstyle=full].
+
+See also: https://en.wikipedia.org/wiki/Crossbar_switch
+
+TODO: describe it in more detail. It appears to be a very simple mechanism.
+
+Under `src/mem/` we see that there is both a coherent and a non-coherent XBar.
+
+In `se.py` it is set at:
+
+....
+if options.ruby:
+    ...
+else:
+    MemClass = Simulation.setMemClass(options)
+    system.membus = SystemXBar()
+....
+
+and `SystemXBar` is defined at `src/mem/XBar.py` with a nice comment:
+
+....
+# One of the key coherent crossbar instances is the system
+# interconnect, tying together the CPU clusters, GPUs, and any I/O
+# coherent masters, and DRAM controllers.
+class SystemXBar(CoherentXBar):
+....
+
+Tested in gem5 12c917de54145d2d50260035ba7fa614e25317a3.
 
 ==== gem5 Python 3 build
 
@@ -12307,6 +12641,8 @@ For example, `MinorCPU` allows all implemented instructions, including <<arm-sve
 The weird name "Minor" stands for "M (TODO what is M) IN ONder".
 
 Its 4 stage pipeline is described at the "MinorCPU" section of <<gem5-arm-rsk>>.
+
+There is also an in-tree doxygen at: https://github.com/gem5/gem5/blob/9fc9c67b4242c03f165951775be5cd0812f2a705/src/doc/inside-minor.doxygen[`src/doc/inside-minor.doxygen`] and rendered at: http://pages.cs.wisc.edu/~swilson/gem5-docs/minor.html
 
 As of 2019, in-order cores are mostly present in low power / cost contexts, for example little cores of https://en.wikipedia.org/wiki/ARM_big.LITTLE[ARM bigLITTLE].
 
@@ -12423,7 +12759,7 @@ To run and GDB step debug the executable, just copy the full command line from t
 
 ==== gem5 Python C++ interaction
 
-The interaction uses the Python C extension interface https://docs.python.org/2/extending/extending.html interface through the pybind11 helper library: https://github.com/pybind/pybind11
+The interaction uses the Python C extension interface https://docs.python.org/2/extending/extending.html interface through the <<pybind11>> helper library: https://github.com/pybind/pybind11
 
 The C++ executable both:
 
@@ -12435,7 +12771,7 @@ An example of this can be found at:
 * https://docs.python.org/2/extending/embedding.html#extending-embedded-python
 * https://github.com/pybind/pybind11/tree/v2.2.3/tests/test_embed
 
-then gem5 magic `simobject` class adds some crazy stuff on top of it further... is is a mess. in particular, it auto generates `params/` headers. TODO: why is this mess needed at all? pybind11 seems to handle constructor arguments just fine:
+then gem5 magic `SimObject` class adds some crazy stuff on top of it further, is is a mess. In particular, it auto generates `params/` headers. TODO: why is this mess needed at all? pybind11 seems to handle constructor arguments just fine:
 
 * https://github.com/pybind/pybind11/blob/v2.2.3/tests/test_class.py#L77
 * https://github.com/pybind/pybind11/blob/v2.2.3/tests/test_class.cpp#L41
@@ -12457,7 +12793,7 @@ The object is created in Python for example from `src/dev/alpha/Tsunami.py` as:
     fb = BadDevice(pio_addr=0x801fc0003d0, devicename='FrameBuffer')
 ....
 
-Since `BadDevice` has no `+__init__+` method, and neither `BasicPioDevice`, it all just falls through until the SimObject.__init__ constructor.
+Since `BadDevice` has no `+__init__+` method, and neither `BasicPioDevice`, it all just falls through until the `+SimObject.__init__+` constructor.
 
 This constructor will loop through the inheritance chain and give the Python parameters to the C++ BadDeviceParams class as follows.
 
@@ -12543,6 +12879,10 @@ BadDevice::BadDevice(Params *p)
 }
 ....
 
+It has been found that this usage of <<pybind11>> across hundreds of `SimObject` files accounted for 50% of the gem5 build time at one point: <<pybind11-accounts-for-50-of-gem5-build-time>>.
+
+To get a feeling of how `SimObject` objects are run, see: <<gem5-event-queue-atomicsimplecpu-syscall-emulation-freestanding-example-analysis>>.
+
 Tested on gem5 08c79a194d1a3430801c04f37d13216cc9ec1da3.
 
 ==== gem5 entry point
@@ -12609,7 +12949,7 @@ The Python config files then set the entire system up in Python, and finally cal
 src/sim/simulate.cc
 ....
 
-and that is where doSimLoop the main event loop, `doSimLoop` gets called and starts kicking off the <<gem5-event-queue>>.
+and that is where the main event loop, `doSimLoop`, gets called and starts kicking off the <<gem5-event-queue>>.
 
 Tested at gem5 b4879ae5b0b6644e6836b0881e4da05c64a6550d.
 
@@ -12626,14 +12966,16 @@ Not all times need to have an associated event: if a given time has no events, g
 Important examples of events include:
 
 * CPU ticks
-* TODO peripherals and memory
+* peripherals and memory
 
-At the beginning of simulation, gem5 sets up exactly two events:
+At <<gem5-event-queue-atomicsimplecpu-syscall-emulation-freestanding-example-analysis>> we see for example that at the beginning of an <<gem5-basesimplecpu,AtomicCPU>> simulation, gem5 sets up exactly two events:
 
 * the first CPU cycle
 * one exit event at the end of time which triggers <<gem5-simulate-limit-reached>>
 
-Tick events then get triggered one by one as simulation progresses, in addition to any other system events.
+Then, at the end of the callback of one tick event, another tick is scheduled.
+
+And so the simulation progresses tick by tick, until an exit event happens.
 
 The `EventQueue` class has one awesome `dump()` function that prints a human friendly representation of the queue, and can be easily called from GDB. TODO example.
 
@@ -12647,6 +12989,31 @@ Event *exit_event = eventq->serviceOne();
 
 This calls the `Event::process` method of the event.
 
+Another important technique is to use <<debug-the-emulator,GDB>> and break at interesting points such as:
+
+....
+b Trace::OstreamLogger::logMessage()
+b EventManager::schedule
+b EventFunctionWrapper::process
+....
+
+although stepping into `EventFunctionWrapper::process` which does `std::function` is a bit of a pain: https://stackoverflow.com/questions/59429401/how-to-step-into-stdfunction-user-code-from-c-functional-with-gdb
+
+Another potentially useful technique is to use:
+
+....
+--trace Event,ExecAll,FmtFlag,FmtStackTrace --trace-stdout
+....
+
+which automates the logging of `Trace::OstreamLogger::logMessage()` backtraces.
+
+But alas, it misses which function callback is being scheduled, which is the awesome thing we actually want:
+
+* https://stackoverflow.com/questions/37545327/get-the-name-of-a-stdfunction
+* https://stackoverflow.com/questions/40706805/how-to-convert-a-function-pointer-to-function-name/40706869
+
+Then, once we had that, the most perfect thing ever would be to make the full event graph containing which events schedule which events!
+
 ===== gem5 event queue AtomicSimpleCPU syscall emulation freestanding example analysis
 
 Let's now analyze every single event on a minimal <<gem5-syscall-emulation-mode>> in the <<gem5-cpu-types,simplest CPU that we have>>:
@@ -12656,60 +13023,124 @@ Let's now analyze every single event on a minimal <<gem5-syscall-emulation-mode>
   --arch aarch64 \
   --emulator gem5 \
   --userland userland/arch/aarch64/freestanding/linux/hello.S \
-  --trace Event \
+  --trace Event,ExecAll,FmtFlag \
   --trace-stdout \
 ;
 ....
 
-At LKMC a0ea29835b9bacc6aa1cceb24c79d895315991d4 + 1 this outputs:
+which gives:
 
 ....
-      0: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
+      0: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 scheduled @ 0
 **** REAL SIMULATION ****
-      0: Event_70: generic event scheduled @ 0
+      0: Event: Event_70: generic 70 scheduled @ 0
 info: Entering event queue @ 0.  Starting simulation...
-      0: Event_70: generic event rescheduled @ 18446744073709551615
-      0: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped event rescheduled @ 500
-    500: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped event rescheduled @ 1000
-   1000: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped event rescheduled @ 1500
-   1500: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped event rescheduled @ 2000
+      0: Event: Event_70: generic 70 rescheduled @ 18446744073709551615
+      0: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 executed @ 0
+      0: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue    :   movz   x0, #1, #0        : IntAlu :  D=0x0000000000000001  flags=(IsInteger)
+      0: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 rescheduled @ 500
+    500: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 executed @ 500
+    500: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+4    :   adr   x1, #28            : IntAlu :  D=0x0000000000400098  flags=(IsInteger)
+    500: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 rescheduled @ 1000
+   1000: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 executed @ 1000
+   1000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+8    :   ldr   w2, #4194464       : MemRead :  D=0x0000000000000006 A=0x4000a0  flags=(IsInteger|IsMemRef|IsLoad)
+   1000: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 rescheduled @ 1500
+   1500: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 executed @ 1500
+   1500: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+12    :   movz   x8, #64, #0       : IntAlu :  D=0x0000000000000040  flags=(IsInteger)
+   1500: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 rescheduled @ 2000
+   2000: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 executed @ 2000
+   2000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+16    :   svc   #0x0               : IntAlu :   flags=(IsSerializeAfter|IsNonSpeculative|IsSyscall)
 hello
-   2000: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped event rescheduled @ 2500
-   2500: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped event rescheduled @ 3000
-   3000: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped event rescheduled @ 3500
-   3500: Event_71: generic event scheduled @ 3500
+   2000: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 rescheduled @ 2500
+   2500: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 executed @ 2500
+   2500: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+20    :   movz   x0, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+   2500: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 rescheduled @ 3000
+   3000: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 executed @ 3000
+   3000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+24    :   movz   x8, #93, #0       : IntAlu :  D=0x000000000000005d  flags=(IsInteger)
+   3000: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 rescheduled @ 3500
+   3500: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 executed @ 3500
+   3500: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+28    :   svc   #0x0               : IntAlu :   flags=(IsSerializeAfter|IsNonSpeculative|IsSyscall)
+   3500: Event: Event_71: generic 71 scheduled @ 3500
+   3500: Event: Event_71: generic 71 executed @ 3500
 ....
 
-which we immediately guess means that there is one event per tick when comparing to the `ExecAll` trace:
+On the event trace, we can first see:
 
 ....
-      0: system.cpu A0 T0 : @asm_main_after_prologue    :   movz   x0, #1, #0        : IntAlu :  D=0x0000000000000001  flags=(IsInteger)
-    500: system.cpu A0 T0 : @asm_main_after_prologue+4    :   adr   x1, #28            : IntAlu :  D=0x0000000000400098  flags=(IsInteger)
-   1000: system.cpu A0 T0 : @asm_main_after_prologue+8    :   ldr   w2, #4194464       : MemRead :  D=0x0000000000000006 A=0x4000a0  flags=(IsInteger|IsMemRef|IsLoad)
-   1500: system.cpu A0 T0 : @asm_main_after_prologue+12    :   movz   x8, #64, #0       : IntAlu :  D=0x0000000000000040  flags=(IsInteger)
-   2000: system.cpu A0 T0 : @asm_main_after_prologue+16    :   svc   #0x0               : IntAlu :   flags=(IsSerializeAfter|IsNonSpeculative|IsSyscall)
-hello
-   2500: system.cpu A0 T0 : @asm_main_after_prologue+20    :   movz   x0, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
-   3000: system.cpu A0 T0 : @asm_main_after_prologue+24    :   movz   x8, #93, #0       : IntAlu :  D=0x000000000000005d  flags=(IsInteger)
-   3500: system.cpu A0 T0 : @asm_main_after_prologue+28    :   svc   #0x0               : IntAlu :   flags=(IsSerializeAfter|IsNonSpeculative|IsSyscall)
-Exiting @ tick 3500 because exiting with last active thread context
+0: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 scheduled @ 0
 ....
 
-On the event trace, we can see:
+This schedules a tick event for time `0`, and leads to the first clock tick.
 
-* `AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped event scheduled @ 0` schedules a tick event for time `0`, and this leads to the first clock tick
-* `0: Event_70: generic event scheduled @ 0`: schedules the end of time event for time `0`, which is later rescheduled to the actual end of time: `0: Event_70: generic event rescheduled @ 18446744073709551615`
-* at `0: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped event rescheduled @ 500` the first clock tick must have finished running, and so to represent the next one, it was simply rescheduled for the next time `500`! This is done at the end of `AtomicSimpleCPU::tick()`:
-+
+Then:
+
+....
+0: Event: Event_70: generic 70 scheduled @ 0
+0: Event: Event_70: generic 70 rescheduled @ 18446744073709551615
+....
+
+schedules the end of time event for time `0`, which is later rescheduled to the actual end of time.
+
+At:
+
+....
+0: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 executed @ 0
+0: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue    :   movz   x0, #1, #0        : IntAlu :  D=0x0000000000000001  flags=(IsInteger)
+0: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 rescheduled @ 500
+....
+
+the tick event happens, the instruction runs, and then the instruction is rescheduled in `500` time units. This is done at the end of `AtomicSimpleCPU::tick()`:
+
 ....
 if (_status != Idle)
     reschedule(tickEvent, curTick() + latency, true);
 ....
-* at `3500: Event_71: generic event scheduled @ 3500` the exit system call is called and the simulation ends.
-+
-A new event is scheduled for the current time itself. TODO what is this event?
 
-Let's study the first event. From <<debug-the-emulator,GDB>>, let's break at the point that prints messages: `Trace::OstreamLogger::logMessage()` to see where events are being scheduled from:
+At:
+
+....
+3500: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+28    :   svc   #0x0               : IntAlu :   flags=(IsSerializeAfter|IsNonSpeculative|IsSyscall)
+3500: Event: Event_71: generic 71 scheduled @ 3500
+3500: Event: Event_71: generic 71 executed @ 3500
+....
+
+the exit system call is called, and then it schedules an exit evit, which gets executed and the simulation ends.
+
+We guess then that `Event_71` comes from the SE implementation of the exit syscall, so let's just confirm, the trace contains:
+
+....
+exitSimLoop() at sim_events.cc:97 0x5555594746e0
+exitImpl() at syscall_emul.cc:215 0x55555948c046
+exitFunc() at syscall_emul.cc:225 0x55555948c147
+SyscallDesc::doSyscall() at syscall_desc.cc:72 0x5555594949b6
+Process::syscall() at process.cc:401 0x555559484717
+SimpleThread::syscall() at 0x555559558059
+ArmISA::SupervisorCall::invoke() at faults.cc:856 0x5555572950d7
+BaseSimpleCPU::advancePC() at base.cc:681 0x555559083133
+AtomicSimpleCPU::tick() at atomic.cc:757 0x55555907834c
+....
+
+and `exitSimLoop()` does:
+
+....
+new GlobalSimLoopExitEvent(when + simQuantum, message, exit_code, repeat);
+....
+
+Tested in gem5 12c917de54145d2d50260035ba7fa614e25317a3.
+
+====== AtomicSimpleCPU initial events
+
+Let's have a closer look at the initial magically scheduled events of the simulation.
+
+Most events come from other events, but at least one initial event must be scheduled somehow from elsewhere to kick things off.
+
+The initial tick event:
+
+....
+0: Event: AtomicSimpleCPU tick.wrapped_function_event: EventFunctionWrapped 39 scheduled @ 0
+....
+
+we'll study by breaking at at the point that prints messages: `b Trace::OstreamLogger::logMessage()` to see where events are being scheduled from:
 
 ....
 Trace::OstreamLogger::logMessage() at trace.cc:149 0x5555593b3b1e
@@ -12733,7 +13164,7 @@ schedule(tickEvent, clockEdge(Cycles(0)));
 
 which calls `EventManager::schedule`.
 
-`AtomicSimpleCPU` is an `EventManager` because `SimObject` inherits from it.
+`AtomicSimpleCPU` is an `EventManager` because <<gem5-python-c-interaction,`SimObject`>> inherits from it.
 
 `tickEvent` is an `EventFunctionWrapper` which contains a `std::function<void(void)> callback;`, and is initialized in the constructor as:
 
@@ -12742,9 +13173,112 @@ tickEvent([this]{ tick(); }, "AtomicSimpleCPU tick",
         false, Event::CPU_Tick_Pri),
 ....
 
-So that's how the main atomic tick loop works, fully understood!
+The call stack above `ArmLinuxProcess64::initState` is <<pybind11>> fuzziness, but if we grep a bit we find the Python call point:
 
-The second event has backtrace:
+src/python/m5/simulate.py
+
+....
+def instantiate(ckpt_dir=None):
+
+    ...
+
+    # Create the C++ sim objects and connect ports
+    for obj in root.descendants(): obj.createCCObject()
+    for obj in root.descendants(): obj.connectPorts()
+
+    # Do a second pass to finish initializing the sim objects
+    for obj in root.descendants(): obj.init()
+
+    ...
+
+    # Restore checkpoint (if any)
+    if ckpt_dir:
+        ...
+    else:
+        for obj in root.descendants(): obj.initState()
+....
+
+and this gets called from the toplevel Python scripts e.g. se.py `configs/common/Simulation.py` does:
+
+....
+m5.instantiate(checkpoint_dir)
+....
+
+As we can see, `initState` is just one stage of generic `SimObject` initialization. `root.descendants()` goes over the entire `SimObject` tree calling `initState()`.
+
+Finally, we see that `initState` is part of the `SimObject` C++ API:
+
+src/sim/sim_object.hh
+
+....
+class SimObject : public EventManager, public Serializable, public Drainable,
+                  public Stats::Group
+{
+
+    ...
+
+    /**
+     * initState() is called on each SimObject when *not* restoring
+     * from a checkpoint.  This provides a hook for state
+     * initializations that are only required for a "cold start".
+     */
+    virtual void initState();
+....
+
+Finally, we see that `initState` is exposed to the Python API at:
+
+build/ARM/python/_m5/param_SimObject.cc
+
+....
+module_init(py::module &m_internal)
+{
+    py::module m = m_internal.def_submodule("param_SimObject");
+    py::class_<SimObjectParams, std::unique_ptr<SimObjectParams, py::nodelete>>(m, "SimObjectParams")
+        .def_readwrite("name", &SimObjectParams::name)
+        .def_readwrite("eventq_index", &SimObjectParams::eventq_index)
+        ;
+
+    py::class_<SimObject, Drainable, Serializable, Stats::Group, std::unique_ptr<SimObject, py::nodelete>>(m, "SimObject")
+        .def("init", &SimObject::init)
+        .def("initState", &SimObject::initState)
+        .def("memInvalidate", &SimObject::memInvalidate)
+        .def("memWriteback", &SimObject::memWriteback)
+        .def("regProbePoints", &SimObject::regProbePoints)
+        .def("regProbeListeners", &SimObject::regProbeListeners)
+        .def("startup", &SimObject::startup)
+        .def("loadState", &SimObject::loadState, py::arg("cp"))
+        .def("getPort", &SimObject::getPort, pybind11::return_value_policy::reference, py::arg("if_name"), py::arg("idx"))
+        ;
+
+}
+....
+
+which is more magical than the other param classes since `py::class_<SimObject` has non-trivial methods, those are auto-generated by the `cxx_exports` code generation mechanism:
+
+....
+class SimObject(object):
+
+    ...
+
+    cxx_exports = [
+        PyBindMethod("init"),
+        PyBindMethod("initState"),
+        PyBindMethod("memInvalidate"),
+        PyBindMethod("memWriteback"),
+        PyBindMethod("regProbePoints"),
+        PyBindMethod("regProbeListeners"),
+        PyBindMethod("startup"),
+    ]
+....
+
+And the second magically scheduled event is the exit event:
+
+....
+0: Event: Event_70: generic 70 scheduled @ 0
+0: Event: Event_70: generic 70 rescheduled @ 18446744073709551615
+....
+
+which is scheduled with backtrace:
 
 ....
 Trace::OstreamLogger::logMessage() at trace.cc:149 0x5555593b3b1e
@@ -12758,7 +13292,7 @@ GlobalSimLoopExitEvent::GlobalSimLoopExitEvent() at sim_events.cc:61 0x555559474
 simulate() at simulate.cc:104 0x555559476d6f
 ....
 
-so gets scheduled automatically at object creation `simulate()` through the `GlobalEvent()` constructor:
+which comes at object creation inside `simulate()` through the `GlobalEvent()` constructor:
 
 ....
 simulate_limit_event =
@@ -12775,29 +13309,126 @@ if (event->isExitEvent()) {
     return event;
 ....
 
-And at last, we can guess without reading the code that `Event_71` is comes from the SE implementation of the exit syscall, so let's just confirm, the trace contains:
+Tested in gem5 12c917de54145d2d50260035ba7fa614e25317a3.
+
+====== AtomicSimpleCPU tick reschedule timing
+
+Inside `AtomicSimpleCPU::tick()` we saw previously that the reschedule happens at:
 
 ....
-exitSimLoop() at sim_events.cc:97 0x5555594746e0
-exitImpl() at syscall_emul.cc:215 0x55555948c046
-exitFunc() at syscall_emul.cc:225 0x55555948c147
-SyscallDesc::doSyscall() at syscall_desc.cc:72 0x5555594949b6
-Process::syscall() at process.cc:401 0x555559484717
-SimpleThread::syscall() at 0x555559558059
-ArmISA::SupervisorCall::invoke() at faults.cc:856 0x5555572950d7
-BaseSimpleCPU::advancePC() at base.cc:681 0x555559083133
-AtomicSimpleCPU::tick() at atomic.cc:757 0x55555907834c
+    if (latency < clockPeriod())
+        latency = clockPeriod();
+
+    if (_status != Idle)
+        reschedule(tickEvent, curTick() + latency, true);
 ....
 
-and `exitSimLoop()` does:
+so it is interesting to learn where that `latency` comes from.
+
+From our logs, we see that all events happened with a `500` time unit interval between them, so that must be the value for all instructions of our simple example.
+
+By GDBing it a bit, we see that none of our instructions incremented `latency`, and so it got set to `clockPeriod()`, which comes from `ClockDomain::clockPeriod()` which then likely comes from:
 
 ....
-new GlobalSimLoopExitEvent(when + simQuantum, message, exit_code, repeat);
+    parser.add_option("--cpu-clock", action="store", type="string",
+                      default='2GHz',
 ....
 
-Tested at b4879ae5b0b6644e6836b0881e4da05c64a6550d.
+because the time unit is picoseconds. This then shows on the <<gem5-config-ini,`config.ini`>> as:
+
+....
+[system.cpu_clk_domain]
+type=SrcClockDomain
+clock=500
+....
+
+====== AtomicSimpleCPU memory access
+
+It will be interesting to see how `AtomicSimpleCPU` makes memory access on GDB and to compare that with <<gem5-event-queue-timingsimplecpu-syscall-emulation-freestanding-example-analysis,`TimingSimpleCPU`>>.
+
+We assume that the memory access still goes through the <<gem5-crossbar-interconnect,`CoherentXBar`>>, but instead of generating an event to model delayed response, it must be doing the access directly.
+
+Inside `AtomicSimpleCPU::tick`, we track `ifetch_req` and see:
+
+....
+        fault = thread->itb->translateAtomic(ifetch_req, thread->getTC(),
+                                                BaseTLB::Execute);
+....
+
+We can compare that with what happen sin `TimingSimpleCPU`:
+
+....
+        thread->itb->translateTiming(ifetch_req, thread->getTC(),
+                &fetchTranslation, BaseTLB::Execute);
+....
+
+and so there it is: the `ITB` classes are the same, but there are a separate `Atomic` and `Timing` methods!
+
+The `Timing` one calls `ArmISA::TLB::translateComplete`
+
+Tested in gem5 b4879ae5b0b6644e6836b0881e4da05c64a6550d.
+
+====== gem5 se.py page translation
+
+Happens on `EmulationPageTable`, and seems to happen atomically without making any extra memory requests.
+
+TODO confirm from code, notably by seeing where the translation table is set.
+
+But we can confirm with logging with:
+
+....
+--trace DRAM,ExecAll,FmtFlag
+....
+
+which gives
+
+....
+      0: DRAM: system.mem_ctrls: recvAtomic: ReadReq 0x78
+      0: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue    :   movz   x0, #1, #0        : IntAlu :  D=0x0000000000000001  flags=(IsInteger)
+    500: DRAM: system.mem_ctrls: recvAtomic: ReadReq 0x7c
+    500: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+4    :   adr   x1, #28            : IntAlu :  D=0x0000000000400098  flags=(IsInteger)
+   1000: DRAM: system.mem_ctrls: recvAtomic: ReadReq 0x80
+   1000: DRAM: system.mem_ctrls: recvAtomic: ReadReq 0xa0
+   1000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+8    :   ldr   w2, #4194464       : MemRead :  D=0x0000000000000006 A=0x4000a0  flags=(IsInteger|IsMemRef|IsLoad)
+   1500: DRAM: system.mem_ctrls: recvAtomic: ReadReq 0x84
+   1500: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+12    :   movz   x8, #64, #0       : IntAlu :  D=0x0000000000000040  flags=(IsInteger)
+   2000: DRAM: system.mem_ctrls: recvAtomic: ReadReq 0x88
+   2000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+16    :   svc   #0x0               : IntAlu :   flags=(IsSerializeAfter|IsNonSpeculative|IsSyscall)
+hello
+   2500: DRAM: system.mem_ctrls: recvAtomic: ReadReq 0x8c
+   2500: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+20    :   movz   x0, #0, #0        : IntAlu :  D=0x0000000000000000  flags=(IsInteger)
+   3000: DRAM: system.mem_ctrls: recvAtomic: ReadReq 0x90
+   3000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+24    :   movz   x8, #93, #0       : IntAlu :  D=0x000000000000005d  flags=(IsInteger)
+   3500: DRAM: system.mem_ctrls: recvAtomic: ReadReq 0x94
+   3500: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+28    :   svc   #0x0               : IntAlu :   flags=(IsSerializeAfter|IsNonSpeculative|IsSyscall)
+Exiting @ tick 3500 because exiting with last active thread context
+   3500: DRAM: system.mem_ctrls_0: Computing stats due to a dump callback
+   3500: DRAM: system.mem_ctrls_1: Computing stats due to a dump callback
+....
+
+So we see that before every instruction execution there was a DRAM event! Also, each read happens 4 bytes after the previous one, which is consistent with instruction fetches.
+
+The DRAM addresses are very close to zero e.g. `0x78` for the first instruction, and therefore we guess that they are physical since the ELF entry point is much higher:
+
+....
+./run-toolchain --arch aarch64 readelf -- -h "$(./getvar --arch aarch64 userland_build_dir)/arch/aarch64/freestanding/linux/hello.out
+....
+
+at:
+
+....
+  Entry point address:               0x400078
+....
+
+For LDR, we see that there was an extra DRAM read as well after the fetch read, as expected.
+
+Tested in gem5 b4879ae5b0b6644e6836b0881e4da05c64a6550d.
 
 ===== gem5 event queue TimingSimpleCPU syscall emulation freestanding example analysis
+
+Now, let's move on to `TimingSimpleCPU`, which is just like `AtomicSimpleCPU` internally, but now the memory requests don't actually finish immediately: <<gem5-cpu-types>>!
+
+This means that simulation will be much more accurate, and the DRAM memory will be modelled.
 
 TODO: analyze better what each of the memory event mean. For now, we have just collected a bunch of data there, but needs interpreting. The CPU specifics in this section are already insightful however.
 
@@ -12807,56 +13438,225 @@ TODO: analyze better what each of the memory event mean. For now, we have just c
 ./run \
   --arch aarch64 \
   --emulator gem5 \
+  --gem5-build-type gem5 \
   --userland userland/arch/aarch64/freestanding/linux/hello.S \
-  --trace Event,ExecAll \
+  --trace Event,ExecAll,FmtFlag \
   --trace-stdout \
   -- \
   --cpu-type TimingSimpleCPU \
 ;
 ....
 
-As of LKMC 9bfbff244d713de40e5686bd370eadb20cf78c7b + 1 the log is now much more complex.
+As of LKMC 78ce2dabe18ef1d87dc435e5bc9369ce82e8d6d2 gem5 12c917de54145d2d50260035ba7fa614e25317a3 the log is now much more complex.
 
 Here is an abridged version with:
 
 * the beginning up to the second instruction
 * end ending
 
-because all that happens in between is exactly the same as the first two instructions and therefore boring:
+because all that happens in between is exactly the same as the first two instructions and therefore boring.
+
+We have also manually added:
+
+* double newlines before each event execution
+* line IDs to be able to refer to specific events more easily (`#0`, `#1`, etc.)
 
 ....
-      0: system.cpu.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
+#0       0: Event: system.cpu.wrapped_function_event: EventFunctionWrapped 43 scheduled @ 0
 **** REAL SIMULATION ****
-      0: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 7786250
-      0: system.mem_ctrls_1.wrapped_function_event: EventFunctionWrapped event scheduled @ 7786250
-      0: Event_74: generic event scheduled @ 0
+#1       0: Event: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped 14 scheduled @ 7786250
+#2       0: Event: system.mem_ctrls_1.wrapped_function_event: EventFunctionWrapped 20 scheduled @ 7786250
+#3       0: Event: Event_74: generic 74 scheduled @ 0
 info: Entering event queue @ 0.  Starting simulation...
-      0: Event_74: generic event rescheduled @ 18446744073709551615
-      0: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
-      0: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped event scheduled @ 1000
-      0: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
-      0: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 46250
-      0: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 5000
-      0: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
-  46250: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped event scheduled @ 74250
-  74250: system.membus.slave[1]-RespPacketQueue.wrapped_function_event: EventFunctionWrapped event scheduled @ 77000
-  74250: system.membus.respLayer1.wrapped_function_event: EventFunctionWrapped event scheduled @ 77000
-  77000: Event_40: Timing CPU icache tick event scheduled @ 77000
-  77000: system.cpu A0 T0 : @asm_main_after_prologue    :   movz   x0, #1, #0        : IntAlu :  D=0x0000000000000001  flags=(IsInteger)
-  77000: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 77000
-  77000: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped event scheduled @ 78000
-  77000: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 95750
-  77000: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 77000
-  95750: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped event scheduled @ 123750
- 123750: system.membus.slave[1]-RespPacketQueue.wrapped_function_event: EventFunctionWrapped event scheduled @ 126000
- 123750: system.membus.respLayer1.wrapped_function_event: EventFunctionWrapped event scheduled @ 126000
- 126000: Event_40: Timing CPU icache tick event scheduled @ 126000
-      [...]
- 469000: system.cpu A0 T0 : @asm_main_after_prologue+28    :   svc   #0x0               : IntAlu :   flags=(IsSerializeAfter|IsNonSpeculative|IsSyscall)
- 469000: Event_75: generic event scheduled @ 469000
+#4       0: Event: Event_74: generic 74 rescheduled @ 18446744073709551615
+
+#5       0: Event: system.cpu.wrapped_function_event: EventFunctionWrapped 43 executed @ 0
+#6       0: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 scheduled @ 0
+#7       0: Event: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped 60 scheduled @ 1000
+
+#8       0: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 executed @ 0
+#9       0: Event: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped 12 scheduled @ 0
+#10      0: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 10 scheduled @ 46250
+#11      0: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 scheduled @ 5000
+
+#12      0: Event: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped 12 executed @ 0
+#13      0: Event: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped 15 scheduled @ 0
+
+#14      0: Event: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped 15 executed @ 0
+
+#15   1000: Event: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped 60 executed @ 1000
+
+#16   5000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 executed @ 5000
+
+#17  46250: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 10 executed @ 46250
+#18  46250: Event: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 8 scheduled @ 74250
+
+#19  74250: Event: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 8 executed @ 74250
+#20  74250: Event: system.membus.slave[1]-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 64 scheduled @ 77000
+#21  74250: Event: system.membus.respLayer1.wrapped_function_event: EventFunctionWrapped 65 scheduled @ 77000
+
+#22  77000: Event: system.membus.respLayer1.wrapped_function_event: EventFunctionWrapped 65 executed @ 77000
+
+#23  77000: Event: system.membus.slave[1]-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 64 executed @ 77000
+#24  77000: Event: Event_40: Timing CPU icache tick 40 scheduled @ 77000
+
+#25  77000: Event: Event_40: Timing CPU icache tick 40 executed @ 77000
+     77000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue    :   movz   x0, #1, #0        : IntAlu :  D=0x0000000000000001  flags=(IsInteger)
+#26  77000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 scheduled @ 77000
+#27  77000: Event: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped 60 scheduled @ 78000
+
+#28  77000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 executed @ 77000
+#29  77000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 10 scheduled @ 95750
+#30  77000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 scheduled @ 77000
+
+#31  77000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 executed @ 77000
+
+#32  78000: Event: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped 60 executed @ 78000
+
+#33  95750: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 10 executed @ 95750
+#34  95750: Event: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 8 scheduled @ 123750
+
+#35 123750: Event: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 8 executed @ 123750
+#36 123750: Event: system.membus.slave[1]-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 64 scheduled @ 126000
+#37 123750: Event: system.membus.respLayer1.wrapped_function_event: EventFunctionWrapped 65 scheduled @ 126000
+
+#38 126000: Event: system.membus.respLayer1.wrapped_function_event: EventFunctionWrapped 65 executed @ 126000
+
+#39 126000: Event: system.membus.slave[1]-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 64 executed @ 126000
+#40 126000: Event: Event_40: Timing CPU icache tick 40 scheduled @ 126000
+
+#41 126000: Event: Event_40: Timing CPU icache tick 40 executed @ 126000
+    126000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+4    :   adr   x1, #28            : IntAlu :  D=0x0000000000400098  flags=(IsInteger)
+#42 126000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 scheduled @ 126000
+#43 126000: Event: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped 60 scheduled @ 127000
+
+    [...]
+
+    469000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+28    :   svc   #0x0               : IntAlu :   flags=(IsSerializeAfter|IsNonSpeculative|IsSyscall)
+    469000: Event: Event_75: generic 75 scheduled @ 469000
+    469000: Event: Event_75: generic 75 executed @ 469000
 ....
 
-`0: system.cpu.wrapped_function_event` schedule the initial tick, much like for for `AtomicSimpleCPU`. This time however, it is not a tick, but rather a fetch event that gets scheduled:
+Looking into the generated <<gem5-config-ini,`config.dot.svg`>> can give a better intuition on the shape of the memory system: xref:config-dot-svg-timingsimplecpu[xrefstyle=full], so it is good to keep that in mind.
+
+[[config-dot-svg-timingsimplecpu]]
+.`config.dot.svg` for a TimingSimpleCPU without caches.
+image::{cirosantilli-media-base}gem5_config_TimingSimpleCPU_12c917de54145d2d50260035ba7fa614e25317a3.svg?sanitize=true[height=600]
+
+It is also helpful to see this as a tree of events where one execute event schedules other events:
+
+....
+    | | | | |
+    0 1 2 3 4   0 TimingSimpleCPU::fetch
+    5
+    |
+    +---+
+    |   |
+    6   7       6 DRAMCtrl::processNextReqEvent (0)
+    8   15      7 BaseXBar::Layer::releaseLayer
+    |
++---+---+
+|   |   |
+9   10  11      9 DRAMCtrl::Rank::processActivateEvent
+12  17  16     10 DRAMCtrl::processRespondEvent (46.25)
+|   |          11 DRAMCtrl::processNextReqEvent (5)
+|   |
+13  18         13 DRAMCtrl::Rank::processPowerEvent
+14  19         18 PacketQueue::processSendEvent (28)
+    |
+    +---+
+    |   |
+    20  21     20 PacketQueue::processSendEvent  (2.75)
+    23  22     21 BaseXBar::Layer<SrcType, DstType>::releaseLayer
+    |
+    24         24 TimingSimpleCPU::IcachePort::ITickEvent::process (0)
+    25
+    |
+    +---+
+    |   |
+    26  27     26 DRAMCtrl::processNextReqEvent
+    28  32     27 BaseXBar::Layer<SrcType, DstType>::releaseLayer
+    |
+    +---+
+    |   |
+    29  30     29 DRAMCtrl::processRespondEvent
+    33  31     30 DRAMCtrl::processNextReqEvent
+    |
+    34         34 PacketQueue::processSendEvent
+    35
+    |
+    +---+
+    |   |
+    36  37     36 PacketQueue::processSendEvent
+    39  38     37 BaseXBar::Layer<SrcType, DstType>::releaseLayer
+    |
+    40         40 TimingSimpleCPU::IcachePort::ITickEvent::process
+    41
+    |
+    +---+
+    |   |
+    42  43     42 DRAMCtrl::processNextReqEvent
+               43 BaseXBar::Layer<SrcType, DstType>::releaseLayer
+....
+
+Note that every schedule is followed by an execution, so we put them together, for example:
+
+....
+    |   |
+    6   7    6 DRAMCtrl::processNextReqEvent (0)
+    8   15   7 BaseXBar::Layer::releaseLayer (0)
+    |
+....
+
+means:
+
+* `6`: schedule `DRAMCtrl::processNextReqEvent` to run in `0` ns after the execution that scheduled it
+* `8`: execute `DRAMCtrl::processNextReqEvent`
+* `7`: schedule `BaseXBar::Layer::releaseLayer` to run in `0` ns after the execution that scheduled it
+* `15`: execute `BaseXBar::Layer::releaseLayer`
+
+With this, we can focus on going up the event tree from an event of interest until we see what originally caused it!
+
+Notably, the above tree contains the execution of the first two instructions.
+
+Observe how the events leading up to the second instruction are basically a copy of those of the first one, this is the basic `TimingSimpleCPU` event loop in action.
+
+One line summary of events:
+
+* #5: adds the request to the DRAM queue, and schedules a `DRAMCtrl::processNextReqEvent` which later sees that request immediately
+* #8: picks up the only request from the DRAM read queue (`readQueue`) and services that.
++
+If there were multiple requests, priority arbitration under `DRAMCtrl::chooseNext` could chose a different one than the first based on packet priorities
++
+This puts the request on the response queue `respQueue` and schedules another `DRAMCtrl::processNextReqEvent` but the request queue is empty, and that does nos schedule further events
+* #17: picks up the only request from the DRAM response queue and services that by placing it in yet another queue, and scheduling the `PacketQueue::processSendEvent` which will later pick up that packet
+* #19: picks up the request from the previous queue, and forwards it to another queue, and schedules yet another `PacketQueue::processSendEvent`
++
+The current one is the DRAM passing the message to the XBar, and the next `processSendEvent` is the XBar finally sending it back to the CPU
+* #23: the XBar port is actually sending the reply back.
++
+If knows to which CPU core to send the request to because ports keep a map of request to source:
++
+....
+const auto route_lookup = routeTo.find(pkt->req);
+....
+
+====== TimingSimpleCPU analysis #0
+
+Schedules `TimingSimpleCPU::fetch` through:
+
+....
+EventManager::schedule
+TimingSimpleCPU::activateContext
+SimpleThread::activate
+Process::initState
+ArmProcess64::initState
+ArmLinuxProcess64::initState
+....
+
+This schedules the initial tick, much like for for `AtomicSimpleCPU`.
+
+This time however, it is not a tick as in `AtomicSimpleCPU`, but rather a fetch event that gets scheduled for later on, since reading DRAM memory now takes time:
 
 ....
 TimingSimpleCPU::activateContext(ThreadID thread_num)
@@ -12874,11 +13674,21 @@ TimingSimpleCPU::activateContext(ThreadID thread_num)
         schedule(fetchEvent, clockEdge(Cycles(0)));
 ....
 
-We have a fetch instead of a tick here compared to `AtomicSimpleCPU`, because in the timing CPU we must first get the instruction opcode from DRAM, which takes some cycles to return!
+By looking at the source, we see that `fetchEvent` runs `TimingSimpleCPU::fetch`.
 
-By looking at the source, we see that fetchEvent runs `TimingSimpleCPU::fetch`.
+Just like for `AtomicSimpleCPU`, this call comes from the `initState` call, which is exposed on `SimObject` and ultimately comes from Python.
 
-`0: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 7786250`: from GDB we see that it comes from `DRAMCtrl::startup` in `mem/dram_ctrl.cc` which contains:
+====== TimingSimpleCPU analysis #1
+
+Backtrace:
+
+....
+EventManager::schedule
+DRAMCtrl::Rank::startup
+DRAMCtrl::startup
+....
+
+Snippets:
 
 ....
 void
@@ -12922,9 +13732,28 @@ DRAMCtrl::Rank::startup(Tick ref_tick)
 }
 ....
 
+`DRAMCtrl::startup` is itself a `SimObject` method exposed to Python and called from `simulate` in `src/python/m5/simulate.py`:
+
+....
+def simulate(*args, **kwargs):
+    global need_startup
+
+    if need_startup:
+        root = objects.Root.getInstance()
+        for obj in root.descendants(): obj.startup()
+....
+
+where `simulate` happens after `m5.instantiate`, and both are called directly from the toplevel scripts, e.g. for se.py in `configs/common/Simulation.py`:
+
+....
+def run(options, root, testsys, cpu_class):
+    ...
+            exit_event = m5.simulate()
+....
+
 By looking up some variable definitions in the source, we now we see some memory parameters clearly:
 
-* ranks: `std::vector<DRAMCtrl::Rank*>` with 2 elements. TODO why do we have 2? What does it represent? Likely linked to <<gem5-config-ini,`config.ini`>> at `system.mem_ctrls.ranks_per_channel=2`
+* ranks: `std::vector<DRAMCtrl::Rank*>` with 2 elements. TODO why do we have 2? What does it represent? Likely linked to <<gem5-config-ini,`config.ini`>> at `system.mem_ctrls.ranks_per_channel=2`: https://en.wikipedia.org/wiki/Memory_rank
 * `tCK=1250`, `tREFI=7800000`, `tRP=13750`, `tRCD=13750`: all defined in a single code location with a comment:
 +
 ....
@@ -12956,47 +13785,115 @@ So we realize that we are going into deep DRAM modelling, more detail that a mer
 
 `curTick() + tREFI - tRP = 0 + 7800000 - 13750 = 7786250` which is when that `refreshEvent` was scheduled. Our simulation ends way before that point however, so we will never know what it did thank God.
 
-`0: Event_74: generic event scheduled @ 0` and `0: Event_74: generic event rescheduled @ 18446744073709551615`: schedule the final exit event, same as for `AtomicSimpleCPU`
+====== TimingSimpleCPU analysis #2
 
-The next interesting event is:
+This is just the startup of the second rank, see: <<timingsimplecpu-analysis-1>>.
 
-....
-system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
-....
-
-which comes from:
+`se.py` allocates the memory controller at `configs/common/MemConfig.py`:
 
 ....
-#0  Trace::OstreamLogger::logMessage
-#1  void Trace::Logger::dprintf
-#2  Event::trace
-#3  EventQueue::schedule
-#4  EventManager::schedule
-#5  DRAMCtrl::addToReadQueue
-#6  DRAMCtrl::recvTimingReq
-#7  DRAMCtrl::MemoryPort::recvTimingReq
-#8  TimingRequestProtocol::sendReq
-#9  MasterPort::sendTimingReq
-#10 CoherentXBar::recvTimingReq
-#11 CoherentXBar::CoherentXBarSlavePort::recvTimingReq(Packet*))
-#12 TimingRequestProtocol::sendReq
-#13 MasterPort::sendTimingReq
-#14 TimingSimpleCPU::sendFetch
-#15 TimingSimpleCPU::FetchTranslation::finish
-#16 ArmISA::TLB::translateComplete
-#17 ArmISA::TLB::translateTiming
-#18 ArmISA::TLB::translateTiming
-#19 TimingSimpleCPU::fetch
-#20 TimingSimpleCPU::<lambda()>::operator()(void)
-#21 std::_Function_handler<void(), TimingSimpleCPU::TimingSimpleCPU(TimingSimpleCPUParams*)::<lambda()> >
-#22 std::function<void)>::operator()() const
-#23 EventFunctionWrapper::process
-#24 EventQueue::serviceOne
-#25 doSimLoop
-#26 simulate
+def config_mem(options, system):
+
+    ...
+
+    opt_mem_channels = options.mem_channels
+
+    ...
+
+    nbr_mem_ctrls = opt_mem_channels
+
+    ...
+
+    for r in system.mem_ranges:
+        for i in range(nbr_mem_ctrls):
+            mem_ctrl = create_mem_ctrl(cls, r, i, nbr_mem_ctrls, intlv_bits,
+                                       intlv_size)
+
+            ...
+
+            mem_ctrls.append(mem_ctrl)
 ....
 
-From the trace, we see that we are already running from the event queue. Therefore, we must have been running a previously scheduled event, and the previous event logs, the only such event is `0: system.cpu.wrapped_function_event: EventFunctionWrapped event scheduled @ 0` which scheduled a memory fetch!
+====== TimingSimpleCPU analysis #3 and #4
+
+From the timing we know what that one is: the end of time exit event, like for `AtomicSimpleCPU`.
+
+====== TimingSimpleCPU analysis #5
+
+Executes `TimingSimpleCPU::fetch()`.
+
+The log shows that event ID `43` is now executing: we had previously seen event `43` get scheduled and had analyzed it to be the initial fetch.
+
+We can step into `TimingSimpleCPU::fetch()` to confirm that the expected <<elf>> entry point is being fetched. We can inspect the ELF with:
+
+....
+./run-toolchain --arch aarch64 readelf -- -h "$(./getvar --arch aarch64 userland_build_dir)/arch/aarch64/freestanding/linux/hello.out
+....
+
+which contains:
+
+....
+  Entry point address:               0x400078
+....
+
+and by the time we go past:
+
+....
+TimingSimpleCPU::fetch()
+{
+    ...
+    if (needToFetch) {
+        ...
+        setupFetchRequest(ifetch_req);
+        DPRINTF(SimpleCPU, "Translating address %#x\n", ifetch_req->getVaddr());
+        thread->itb->translateTiming(ifetch_req, thread->getTC(),
+                &fetchTranslation, BaseTLB::Execute);
+....
+
+`BaseSimpleCPU::setupFetchRequest` sets up the fetch of the expected entry point by reading the PC:
+
+....
+p/x ifetch_req->getVaddr()
+....
+
+Still during the execution of the `fetch`, execution then moves into the address translation `ArmISA::TLB::translateTiming`, and after a call to:
+
+....
+TLB::translateSe
+....
+
+the packet now contains the physical address:
+
+....
+_paddr = 0x78
+....
+
+====== TimingSimpleCPU analysis #6
+
+Schedules `DRAMCtrl::processNextReqEvent` through:
+
+....
+EventManager::schedule
+DRAMCtrl::addToReadQueue
+DRAMCtrl::recvTimingReq
+DRAMCtrl::MemoryPort::recvTimingReq
+TimingRequestProtocol::sendReq
+MasterPort::sendTimingReq
+CoherentXBar::recvTimingReq
+CoherentXBar::CoherentXBarSlavePort::recvTimingReq
+TimingRequestProtocol::sendReq
+MasterPort::sendTimingReq
+TimingSimpleCPU::sendFetch
+TimingSimpleCPU::FetchTranslation::finish
+ArmISA::TLB::translateComplete
+ArmISA::TLB::translateTiming
+ArmISA::TLB::translateTiming
+TimingSimpleCPU::fetch
+....
+
+The event loop has started, and magic initialization schedulings are not happening anymore: now every event is being scheduled from another event:
+
+From the trace, we see that we are already running from the event queue under `TimingSimpleCPU::fetch` as expected.
 
 From the backtrace we see the tortuous path that the data request takes, going through:
 
@@ -13004,7 +13901,9 @@ From the backtrace we see the tortuous path that the data request takes, going t
 * `CoherentXBar`
 * `DRAMCtrl`
 
-The scheduling happens at frame `#5`:
+This matches the `config.ini` system image, since we see that the request goes through the `CoherentXBar` before reaching memory, like all other CPU memory accesses, see also: <<gem5-crossbar-interconnect>>.
+
+The scheduling happens at frame `DRAMCtrl::addToReadQueue`:
 
 ....
      // If we are not already scheduled to get a request out of the
@@ -13015,73 +13914,296 @@ The scheduling happens at frame `#5`:
      }
 ....
 
-and from a quick source grep we see that `nextReqEvent` is a `DRAMCtrl::processNextReqEvent`.
+From this we deduce that the DRAM has a request queue of some sort, and that the fetch:
 
-The next schedule:
+* has added a read request to that queue
+* and has made a future request to read from the queue
 
-....
-0: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped event scheduled @ 1000
-....
-
-and does a `BaseXBar::Layer::releaseLayer` event.
-
-This one is also coming from the request queue at `TimingSimpleCPU::fetch`. We deduce therefore that the single previous fetch event scheduled not one, but two events!
-
-Now:
+The signature of the function is:
 
 ....
-      0: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
+DRAMCtrl::addToReadQueue(PacketPtr pkt, unsigned int pktCount)
 ....
 
-comes from the previously scheduled `DRAMCtrl::processNextReqEvent` and schedules `DRAMCtrl::Rank::processPrechargeEvent`.
+where `PacketPtr` is of `class `Packet`, and so clearly the packet is coming from above.
 
-Now:
-
-....
-      0: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 46250
-....
-
-also runs from `DRAMCtrl::processNextReqEvent` and schedules a `DRAMCtrl::processRespondEvent`.
-
-I'm getting bored, let's skip to the line that appears to matter for the first instruction:
+From:
 
 ....
-  46250: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped event scheduled @ 74250
+p/x *pkt
 ....
 
-But I got even more bored, and I will now skip to the first event before the instruction:
+we see:
 
 ....
-  77000: Event_40: Timing CPU icache tick event scheduled @ 77000
-  77000: system.cpu A0 T0 : @asm_main_after_prologue    :   movz   x0, #1, #0        : IntAlu :  D=0x0000000000000001  flags=(IsInteger)
+addr = 0x78
 ....
 
-This event comes from `PacketQueue::processSendEvent` and schedules itself:
+which from <<timingsimplecpu-analysis-5>> we know is the physical address of the ELF entry point.
+
+Communication goes through certain components via the `class Port` interface, e.g. at `TimingSimpleCPU::sendFetch` a call is made to send the packet forward:
 
 ....
-void
-TimingSimpleCPU::TimingCPUPort::TickEvent::schedule(PacketPtr _pkt, Tick t)
-{
-    pkt = _pkt;
-    cpu->schedule(this, t);
-}
+icachePort.sendTimingReq(ifetch_pkt)
 ....
 
-which polymorphically resolves to:
+which ends up calling:
 
 ....
-void
-TimingSimpleCPU::IcachePort::ITickEvent::process()
-{
-    cpu->completeIfetch(pkt);
-}
+peer->recvTimingReq(pkt);
 ....
 
-and so `TimingSimpleCPU::completeIfetch` is, at last, the interesting `TimingSimpleCPU` function!
+to reach the receiving side:
 
-The end of this instruction must be setting things up in a way that can continue the PC walk loop, and by looking at the source and traces, it is clearly from: `TimingSimpleCPU::advanceInst` which calls `TimingSimpleCPU::fetch`, which is the very thing we did in this simulation!!! OMG, that's the loop.
+....
+CoherentXBar::CoherentXBarSlavePort::recvTimingReq
+....
 
-One final thing to check, is how the memory reads are going to make the processor stall in the middle of an instruction.
+Ports are also used to connect the XBar and the DRAM.
+
+We will then see that at <<timingsimplecpu-analysis-20>> a reply packet will come back through the port interface down to the icache port, and only then does the decoding and execution happen.
+
+====== TimingSimpleCPU analysis #7
+
+Schedules `BaseXBar::Layer::releaseLayer` through:
+
+....
+EventManager::schedule
+BaseXBar::Layer<SlavePort, MasterPort>::occupyLayer
+BaseXBar::Layer<SlavePort, MasterPort>::succeededTiming
+CoherentXBar::recvTimingReq
+CoherentXBar::CoherentXBarSlavePort::recvTimingReq
+TimingRequestProtocol::sendReq
+MasterPort::sendTimingReq
+TimingSimpleCPU::sendFetch
+TimingSimpleCPU::FetchTranslation::finish
+ArmISA::TLB::translateComplete
+ArmISA::TLB::translateTiming
+ArmISA::TLB::translateTiming
+TimingSimpleCPU::fetch
+....
+
+which schedules a `SimpleMemory::release`.
+
+====== TimingSimpleCPU analysis #8
+
+Executes `DRAMCtrl::processNextReqEvent`.
+
+====== TimingSimpleCPU analysis #9
+
+Schedules `DRAMCtrl::Rank::processActivateEvent` through:
+
+....
+EventManager::schedule
+DRAMCtrl::activateBank
+DRAMCtrl::doDRAMAccess
+DRAMCtrl::processNextReqEvent
+....
+
+====== TimingSimpleCPU analysis #10
+
+Schedules `DRAMCtrl::processRespondEvent` through:
+
+....
+EventManager::schedule
+DRAMCtrl::processNextReqEvent
+....
+
+====== TimingSimpleCPU analysis #11
+
+Schedules `DRAMCtrl::processNextReqEvent` through:
+
+....
+EventManager::schedule
+DRAMCtrl::processNextReqEvent
+....
+
+====== TimingSimpleCPU analysis #12
+
+Executes `DRAMCtrl::Rank::processActivateEvent`.
+
+which schedules:
+
+====== TimingSimpleCPU analysis #13
+
+Schedules `DRAMCtrl::Rank::processPowerEvent` through:
+
+....
+EventManager::schedule
+DRAMCtrl::Rank::schedulePowerEvent
+DRAMCtrl::Rank::processActivateEvent
+....
+
+====== TimingSimpleCPU analysis #14
+
+Executes `DRAMCtrl::Rank::processPowerEvent`.
+
+This it must just be some power statistics stuff, as it does not schedule anything else.
+
+====== TimingSimpleCPU analysis #15
+
+Executes `BaseXBar::Layer<SrcType, DstType>::releaseLayer`.
+
+====== TimingSimpleCPU analysis #16
+
+Executes `DRAMCtrl::processNextReqEvent()`.
+
+====== TimingSimpleCPU analysis #17
+
+Executes `DRAMCtrl::processRespondEvent()`.
+
+====== TimingSimpleCPU analysis #18
+
+Schedules `PacketQueue::processSendEvent()` through:
+
+....
+PacketQueue::schedSendEvent
+PacketQueue::schedSendTiming
+QueuedSlavePort::schedTimingResp
+DRAMCtrl::accessAndRespond
+DRAMCtrl::processRespondEvent
+....
+
+====== TimingSimpleCPU analysis #19
+
+Executes `PacketQueue::processSendEvent()`.
+
+====== TimingSimpleCPU analysis #20
+
+Schedules `PacketQueue::processSendEvent` through:
+
+....
+EventManager::schedule
+PacketQueue::schedSendEvent
+PacketQueue::schedSendTiming
+QueuedSlavePort::schedTimingResp
+CoherentXBar::recvTimingResp
+CoherentXBar::CoherentXBarMasterPort::recvTimingResp
+TimingResponseProtocol::sendResp
+SlavePort::sendTimingResp
+RespPacketQueue::sendTiming
+PacketQueue::sendDeferredPacket
+PacketQueue::processSendEvent
+....
+
+From this backtrace, we see that this event is happening as the fetch reply packet finally comes back from DRAM.
+
+====== TimingSimpleCPU analysis #21
+
+Schedules `BaseXBar::Layer<SrcType, DstType>::releaseLayer` through:
+
+....
+EventManager::schedule
+BaseXBar::Layer<MasterPort, SlavePort>::occupyLayer
+BaseXBar::Layer<MasterPort, SlavePort>::succeededTiming
+CoherentXBar::recvTimingResp
+CoherentXBar::CoherentXBarMasterPort::recvTimingResp
+TimingResponseProtocol::sendResp
+SlavePort::sendTimingResp
+RespPacketQueue::sendTiming
+PacketQueue::sendDeferredPacket
+PacketQueue::processSendEvent
+....
+
+====== TimingSimpleCPU analysis #22
+
+Executes `BaseXBar::Layer<SrcType, DstType>::releaseLayer`.
+
+====== TimingSimpleCPU analysis #23
+
+Executes `PacketQueue::processSendEvent`.
+
+====== TimingSimpleCPU analysis #24
+
+Schedules `TimingSimpleCPU::IcachePort::ITickEvent::process()` through:
+
+....
+EventManager::schedule
+TimingSimpleCPU::TimingCPUPort::TickEvent::schedule
+TimingSimpleCPU::IcachePort::recvTimingResp
+TimingResponseProtocol::sendResp
+SlavePort::sendTimingResp
+RespPacketQueue::sendTiming
+PacketQueue::sendDeferredPacket
+PacketQueue::processSendEvent
+....
+
+====== TimingSimpleCPU analysis #25
+
+Executes `TimingSimpleCPU::IcachePort::ITickEvent::process()`.
+
+This custom `process` then calls `TimingSimpleCPU::completeIfetch(PacketPtr pkt)`, and that finally executes the very first instruction:
+
+....
+77000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue    :   movz   x0, #1, #0        : IntAlu :  D=0x0000000000000001  flags=(IsInteger)
+....
+
+The end of this instruction must be setting things up in a way that can continue the PC walk loop, and by looking at the source and traces, it is clearly from: `TimingSimpleCPU::advanceInst` which calls `TimingSimpleCPU::fetch`.
+
+And `TimingSimpleCPU::fetch` is the very thing we did in this simulation at <<timingsimplecpu-analysis-0>>!!! OMG, that's the loop.
+
+====== TimingSimpleCPU analysis #26
+
+Schedules `DRAMCtrl::processNextReqEvent` through:
+
+....
+EventManager::schedule
+DRAMCtrl::addToReadQueue
+DRAMCtrl::recvTimingReq
+DRAMCtrl::MemoryPort::recvTimingReq
+TimingRequestProtocol::sendReq
+MasterPort::sendTimingReq
+CoherentXBar::recvTimingReq
+CoherentXBar::CoherentXBarSlavePort::recvTimingReq
+TimingRequestProtocol::sendReq
+MasterPort::sendTimingReq
+TimingSimpleCPU::sendFetch
+TimingSimpleCPU::FetchTranslation::finish
+ArmISA::TLB::translateComplete
+ArmISA::TLB::translateTiming
+ArmISA::TLB::translateTiming
+TimingSimpleCPU::fetch
+TimingSimpleCPU::advanceInst
+TimingSimpleCPU::completeIfetch
+TimingSimpleCPU::IcachePort::ITickEvent::process
+....
+
+====== TimingSimpleCPU analysis #27
+
+Schedules `BaseXBar::Layer<SrcType, DstType>::releaseLayer` through:
+
+....
+EventManager::schedule
+BaseXBar::Layer<SlavePort, MasterPort>::occupyLayer
+BaseXBar::Layer<SlavePort, MasterPort>::succeededTiming
+CoherentXBar::recvTimingReq
+CoherentXBar::CoherentXBarSlavePort::recvTimingReq
+TimingRequestProtocol::sendReq
+MasterPort::sendTimingReq
+TimingSimpleCPU::sendFetch
+TimingSimpleCPU::FetchTranslation::finish
+ArmISA::TLB::translateComplete
+ArmISA::TLB::translateTiming
+ArmISA::TLB::translateTiming
+TimingSimpleCPU::fetch
+TimingSimpleCPU::advanceInst
+TimingSimpleCPU::completeIfetch
+TimingSimpleCPU::IcachePort::ITickEvent::process
+....
+
+====== TimingSimpleCPU analysis #28
+
+Execute `DRAMCtrl::processNextReqEvent`.
+
+====== TimingSimpleCPU analysis #29
+
+Schedule `DRAMCtrl::processRespondEvent()`.
+
+====== TimingSimpleCPU analysis: LDR stall
+
+One important thing we want to check now, is how the memory reads are going to make the processor stall in the middle of an instruction.
+
+Since we were using a simple CPU without a pipeline, the data memory access stall everything: there is no further progress until memory comes back.
 
 For that, we can GDB to the `TimingSimpleCPU::completeIfetch` of the first LDR done in our test program.
 
@@ -13109,46 +14231,142 @@ So, where is the `execute` happening? Well, I'll satisfy myself with a quick sou
 +
 It also calls `+curStaticInst->completeAcc+`, which pairs up with the `initiateAcc` call.
 
-===== gem5 event queue TimingSimpleCPU syscall emulation freestanding example analysis with caches
-
-Let's just add --caches to see if things go any faster:
+The following is the region of interest of the event log:
 
 ....
-      0: system.cpu.wrapped_function_event: EventFunctionWrapped event scheduled @ 0
+ 175000: Event: Event_40: Timing CPU icache tick 40 executed @ 175000
+ 175000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 scheduled @ 175000
+ 175000: Event: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped 60 scheduled @ 176000
+
+ 175000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 executed @ 175000
+ 175000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 10 scheduled @ 193750
+ 175000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 scheduled @ 175000
+
+ 175000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 executed @ 175000
+
+ 176000: Event: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped 60 executed @ 176000
+
+ 193750: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 10 executed @ 193750
+ 193750: Event: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 8 scheduled @ 221750
+
+ 221750: Event: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 8 executed @ 221750
+ 221750: Event: system.membus.slave[2]-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 66 scheduled @ 224000
+ 221750: Event: system.membus.respLayer2.wrapped_function_event: EventFunctionWrapped 67 scheduled @ 224000
+
+ 224000: Event: system.membus.respLayer2.wrapped_function_event: EventFunctionWrapped 67 executed @ 224000
+
+ 224000: Event: system.membus.slave[2]-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 66 executed @ 224000
+ 224000: Event: Event_42: Timing CPU dcache tick 42 scheduled @ 224000
+
+ 224000: Event: Event_42: Timing CPU dcache tick 42 executed @ 224000
+ 175000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+8    :   ldr   w2, #4194464       : MemRead :  D=0x0000000000000006 A=0x4000a0  flags=(IsInteger|IsMemRef|IsLoad)
+....
+
+We first find it by looking for the `ExecEnable` of LDR.
+
+Then, we go up to the previous `Timing CPU icache tick` event, which from the analysis of previous instruction instructions, we know is where the instruction execution starts, the LDR instruction fetch is done by then!
+
+Next, several events happen as the data request must be percolating through the memory system, it must be very similar to the instruction fetches. TODO analyze event function names.
+
+Finally, at last we reach
+
+....
+ 224000: Event: Event_42: Timing CPU dcache tick 42 executed @ 224000
+ 175000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+8    :   ldr   w2, #4194464       : MemRead :  D=0x0000000000000006 A=0x4000a0  flags=(IsInteger|IsMemRef|IsLoad)
+....
+
+from which we guess:
+
+* `224000`: this is the time that the data request finally returned, and at which execute gets called
+* `175000`: the log finally prints at the end of execution, but it does not show the actual time that things finished, but rather the time that the ifetch finished, which happened in the past
+
+===== gem5 event queue TimingSimpleCPU syscall emulation freestanding example analysis with caches
+
+Let's just add `--caches` to see if things go any faster:
+
+....
+
+      0: Event: system.cpu.wrapped_function_event: EventFunctionWrapped 43 scheduled @ 0
 **** REAL SIMULATION ****
-      0: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 7786250
-      0: system.mem_ctrls_1.wrapped_function_event: EventFunctionWrapped event scheduled @ 7786250
-      0: Event_84: generic event scheduled @ 0
+      0: Event: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped 14 scheduled @ 7786250
+      0: Event: system.mem_ctrls_1.wrapped_function_event: EventFunctionWrapped 20 scheduled @ 7786250
+      0: Event: Event_84: generic 84 scheduled @ 0
 info: Entering event queue @ 0.  Starting simulation...
-      0: Event_84: generic event rescheduled @ 18446744073709551615
-      0: system.cpu.icache.mem_side-MemSidePort.wrapped_function_event: EventFunctionWrapped event scheduled @ 1000
-   1000: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 1000
-   1000: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped event scheduled @ 2000
-   1000: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 1000
-   1000: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 46250
-   1000: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped event scheduled @ 5000
-   1000: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped event scheduled @ 1000
-  46250: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped event scheduled @ 74250
-  74250: system.membus.slave[1]-RespPacketQueue.wrapped_function_event: EventFunctionWrapped event scheduled @ 77000
-  74250: system.membus.respLayer1.wrapped_function_event: EventFunctionWrapped event scheduled @ 80000
-  77000: system.cpu.icache.cpu_side-CpuSidePort.wrapped_function_event: EventFunctionWrapped event scheduled @ 78000
-  78000: Event_40: Timing CPU icache tick event scheduled @ 78000
-  78000: system.cpu A0 T0 : @asm_main_after_prologue    :   movz   x0, #1, #0        : IntAlu :  D=0x0000000000000001  flags=(IsInteger)
-  78000: system.cpu.icache.cpu_side-CpuSidePort.wrapped_function_event: EventFunctionWrapped event scheduled @ 83000
-  83000: Event_40: Timing CPU icache tick event scheduled @ 83000
-  83000: system.cpu A0 T0 : @asm_main_after_prologue+4    :   adr   x1, #28            : IntAlu :  D=0x0000000000400098  flags=(IsInteger)
+      0: Event: Event_84: generic 84 rescheduled @ 18446744073709551615
+      0: Event: system.cpu.wrapped_function_event: EventFunctionWrapped 43 executed @ 0
+      0: Event: system.cpu.icache.mem_side-MemSidePort.wrapped_function_event: EventFunctionWrapped 59 scheduled @ 1000
+   1000: Event: system.cpu.icache.mem_side-MemSidePort.wrapped_function_event: EventFunctionWrapped 59 executed @ 1000
+   1000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 scheduled @ 1000
+   1000: Event: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped 70 scheduled @ 2000
+   1000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 executed @ 1000
+   1000: Event: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped 12 scheduled @ 1000
+   1000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 10 scheduled @ 46250
+   1000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 scheduled @ 5000
+   1000: Event: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped 12 executed @ 1000
+   1000: Event: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped 15 scheduled @ 1000
+   1000: Event: system.mem_ctrls_0.wrapped_function_event: EventFunctionWrapped 15 executed @ 1000
+   2000: Event: system.membus.reqLayer0.wrapped_function_event: EventFunctionWrapped 70 executed @ 2000
+   5000: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 9 executed @ 5000
+  46250: Event: system.mem_ctrls.wrapped_function_event: EventFunctionWrapped 10 executed @ 46250
+  46250: Event: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 8 scheduled @ 74250
+  74250: Event: system.mem_ctrls.port-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 8 executed @ 74250
+  74250: Event: system.membus.slave[1]-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 74 scheduled @ 77000
+  74250: Event: system.membus.respLayer1.wrapped_function_event: EventFunctionWrapped 75 scheduled @ 80000
+  77000: Event: system.membus.slave[1]-RespPacketQueue.wrapped_function_event: EventFunctionWrapped 74 executed @ 77000
+  77000: Event: system.cpu.icache.cpu_side-CpuSidePort.wrapped_function_event: EventFunctionWrapped 57 scheduled @ 78000
+  78000: Event: system.cpu.icache.cpu_side-CpuSidePort.wrapped_function_event: EventFunctionWrapped 57 executed @ 78000
+  78000: Event: Event_40: Timing CPU icache tick 40 scheduled @ 78000
+  78000: Event: Event_40: Timing CPU icache tick 40 executed @ 78000
+  78000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue    :   movz   x0, #1, #0        : IntAlu :  D=0x0000000000000001  flags=(IsInteger)
+  78000: Event: system.cpu.icache.cpu_side-CpuSidePort.wrapped_function_event: EventFunctionWrapped 57 scheduled @ 83000
+  80000: Event: system.membus.respLayer1.wrapped_function_event: EventFunctionWrapped 75 executed @ 80000
+  83000: Event: system.cpu.icache.cpu_side-CpuSidePort.wrapped_function_event: EventFunctionWrapped 57 executed @ 83000
+  83000: Event: Event_40: Timing CPU icache tick 40 scheduled @ 83000
+  83000: Event: Event_40: Timing CPU icache tick 40 executed @ 83000
+  83000: ExecEnable: system.cpu: A0 T0 : @asm_main_after_prologue+4    :   adr   x1, #28            : IntAlu :  D=0x0000000000400098  flags=(IsInteger)
+  83000: Event: system.cpu.icache.mem_side-MemSidePort.wrapped_function_event: EventFunctionWrapped 59 scheduled @ 84000
   [...]
- 191000: system.cpu A0 T0 : @asm_main_after_prologue+28    :   svc   #0x0               : IntAlu :   flags=(IsSerializeAfter|IsNonSpeculative|IsSyscall)
- 191000: Event_85: generic event scheduled @ 191000
+ 191000: Event: Event_85: generic 85 scheduled @ 191000
+ 191000: Event: Event_85: generic 85 executed @ 191000
 ....
 
 So yes, `--caches` does work here, leading to a runtime of 191000 rather than 469000 without caches!
+
+Notably, we now see that very little time passed between the first and second instructions, presumably because rather than going out all the way to the DRAM system, the event chain stops right at the `icache.cpu_side` when a hit happens, which must have been the case for the second instruction, which is just adjacent to the first one.
+
+It is also interested to look into the generated <<gem5-config-ini,`config.dot.svg`>> to compare it to the one without caches: xref:config-dot-svg-timingsimplecpu[xrefstyle=full]. With caches: xref:config-dot-svg-timingsimplecpu-caches[xrefstyle=full].
+
+We can see from there, that we now have `icache` and `dcache` elements inside the CPU block, and that the CPU `icache` and `dcache` ports go through the caches to the `SystemXBar` rather than being directly connected as before.
+
+It is worth noting that the caches do not affect the `ArmITB` and `ArmDTB` <<arm-paging,TLBs>>, since those are already caches themselves.
+
+[[config-dot-svg-timingsimplecpu-caches]]
+.`config.dot.svg` for a TimingSimpleCPU with caches.
+image::{cirosantilli-media-base}gem5_config_TimingSimpleCPU_caches_12c917de54145d2d50260035ba7fa614e25317a3.svg?sanitize=true[height=600]
+
+===== gem5 event queue TimingSimpleCPU syscall emulation freestanding example analysis with caches and multiple CPUs
+
+TODO is this the minimal setup that allows us to see the <<gem5-crossbar-interconnect>>? Can we see anything in `AtomicSimpleCPU`?
+
+It would be amazing to analyze a simple example with interconnect packets possibly invalidating caches of other CPUs.
+
+To observe it we could create one well controlled workload with instructions that flush memory, and run it on two CPUs.
+
+If we don't use such instructions that flush memory, we would only see the interconnect at work when caches run out.
+
+[[config-dot-svg-timingsimplecpu-caches-2-cpus]]
+.`config.dot.svg` for a system with two TimingSimpleCPU with caches.
+image::{cirosantilli-media-base}gem5_config_TimingSimpleCPU_caches_2_CPUs_12c917de54145d2d50260035ba7fa614e25317a3.svg?sanitize=true[height=600]
 
 ===== gem5 event queue MinorCPU syscall emulation freestanding example analysis
 
 The events <<gem5-event-queue-atomicsimplecpu-syscall-emulation-freestanding-example-analysis,for the Atomic CPU>> were pretty simple: basically just ticks.
 
 But as we venture into <<gem5-cpu-types,more complex CPU models>> such as `MinorCPU`, the events get much more complex and interesting.
+
+The memory system system part must be similar to that of `TimingSimpleCPU` that we previously studied <<gem5-event-queue-timingsimplecpu-syscall-emulation-freestanding-example-analysis>>: the main thing we want to see is how the CPU pipeline speeds up execution by preventing some memory stalls.
+
+The <<gem5-config-ini,`config.dot.svg`>> also indicates that: everything is exactly as in <<gem5-event-queue-timingsimplecpu-syscall-emulation-freestanding-example-analysis-with-caches>>, except that the CPU is a `MinorCPU` instead of `TimingSimpleCPU`, and the `--caches` are now mandatory.
 
 TODO: analyze the trace for:
 
@@ -13164,6 +14382,10 @@ TODO: analyze the trace for:
   --caches \
 ;
 ....
+
+===== gem5 event queue DerivO3CPU syscall emulation freestanding example analysis
+
+TODO: like <<gem5-event-queue-minorcpu-syscall-emulation-freestanding-example-analysis>> but even more complex!
 
 ==== gem5 stats internals
 
@@ -13272,6 +14494,24 @@ Bibliography: https://www.mail-archive.com/gem5-users@gem5.org/msg16989.html
 
 ==== gem5 build system
 
+===== gem5 build broken on recent compiler version
+
+gem5 moves a bit slowly, and if your host compiler is very new, the gem5 build might be broken for it, e.g. this was the case for Ubuntu 19.10 with GCC 9 and gem5 62d75e7105fe172eb906d4f80f360ff8591d4178 from Dec 2019.
+
+This happens mostly because GCC keeps getting more strict with warnings and gem5 uses `-Werror`.
+
+The specific problem mentioned above was later fixed, but if it ever happens again, you can work around it by either by or by disabling `-Werror`:
+
+....
+./build-gem5 -- CCFLAGS=-Wno-error
+....
+
+or by  https://askubuntu.com/questions/466651/how-do-i-use-the-latest-gcc-on-ubuntu/1163021#1163021[installing an older compiler] and using it with something like:
+
+....
+./build-gem5 -- CC=gcc-8 CXX=g++-8
+....
+
 ===== gem5 polymorphic ISA includes
 
 E.g. `src/cpu/decode_cache.hh` includes:
@@ -13342,6 +14582,7 @@ It was not possible to disable the symlinks automatically for the entire project
 
 The horrendous downsides of this are:
 
+* It is likely preventing <<ccache>> hits when building to different output paths, because it makes the `-I` includes point to different paths. This is especially important for <<gem5-ruby-build>>, which could have the exact same source files as the non-Ruby builds: https://stackoverflow.com/questions/60340271/can-ccache-handle-symlinks-to-the-same-input-source-file-as-hits
 * when <<debug-the-emulator,debugging the emulator>>, it shows you directories inside the build directory rather than in the source tree
 * it is harder to separate which files are <<gem5-code-generation,generated>> and which are in-tree when grepping for code generated definitions
 
@@ -14059,6 +15300,12 @@ Programs under link:userland/cpp/[] are examples of https://en.wikipedia.org/wik
 
 * link:userland/cpp/empty.cpp[]
 * link:userland/cpp/hello.cpp[]
+* classes
+** constructor
+*** link:userland/cpp/initializer_list_constructor.cpp[]: documents stuff like `std::vector<int> v{0, 1};` and `std::initializer_list`
+*** link:userland/cpp/most_vexing_parse.cpp[]: the most vexing parse is a famous constructor vs function declaration syntax gotcha!
+**** https://en.wikipedia.org/wiki/Most_vexing_parse
+**** http://stackoverflow.com/questions/180172/default-constructor-with-empty-brackets
 * templates
 ** link:userland/cpp/template.cpp[]: basic example
 ** link:userland/cpp/template_class_with_static_member.cpp[]: https://stackoverflow.com/questions/3229883/static-member-initialization-in-a-class-template
@@ -14245,6 +15492,13 @@ https://stackoverflow.com/questions/81656/where-do-i-find-the-current-c-or-c-sta
 
 http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2017/n4659.pdf
 
+[[cpp-type-casting]]
+==== C++ type casting
+
+link:userland/cpp/static_dynamic_reinterpret_cast.cpp[]
+
+https://stackoverflow.com/questions/332030/when-should-static-cast-dynamic-cast-const-cast-and-reinterpret-cast-be-used/60414256#60414256
+
 === POSIX
 
 Programs under link:userland/posix/[] are examples of POSIX C programming.
@@ -14419,11 +15673,23 @@ Example:: link:userland/c/smash_stack.c[]
 
 Leads to the dreadful "Stack smashing detected" message. Which is infinitely better than a silent break in any case.
 
+We had also seen this error in our repository at: <<stack-smashing-detected-when-using-glibc>>.
+
 ==== Memory leaks
 
 How to debug: https://stackoverflow.com/questions/6261201/how-to-find-memory-leak-in-a-c-code-project/57877190#57877190
 
 Example: link:userland/c/memory_leak.c[]
+
+==== Profiling userland programs
+
+https://stackoverflow.com/questions/375913/how-can-i-profile-c-code-running-on-linux/60265409#60265409
+
+OK, we have to learn this stuff.
+
+Examples:
+
+* link:userland/gcc/profile.c[]: simple profiling example, where certain calls of a certain function can dominate the runtime
 
 === Interpreted languages
 
@@ -14431,7 +15697,15 @@ Maybe some day someone will use this setup to study the performance of interpret
 
 ==== Python
 
-Build and install the interpreter on the target:
+Examples:
+
+* link:rootfs_overlay/lkmc/python/hello.py[]: hello world
+* `time`
+** link:rootfs_overlay/lkmc/python/count.py[]: count once every second
+
+===== Build and install the interpreter
+
+Buildroot has a Python package that can be added to the guest image:
 
 ....
 ./build-buildroot --config 'BR2_PACKAGE_PYTHON3=y'
@@ -14473,7 +15747,9 @@ Non-interactive usage:
 ./run --userland "$(./getvar buildroot_target_dir)/usr/bin/python3" --userland-args rootfs_overlay/lkmc/python/hello.py
 ....
 
-LKMC 50ac89b779363774325c81157ec8b9a6bdb50a2f gem5 390a74f59934b85d91489f8a563450d8321b602da:
+===== Python gem5 user mode simulation
+
+At LKMC 50ac89b779363774325c81157ec8b9a6bdb50a2f gem5 390a74f59934b85d91489f8a563450d8321b602da:
 
 ....
 ./run \
@@ -14510,9 +15786,43 @@ fatal: syscall unused#278 (#278) unimplemented.
 
 which corresponds to the glorious `getrandom` syscall: https://github.com/torvalds/linux/blob/v4.17/include/uapi/asm-generic/unistd.h#L707
 
-Examples:
+===== Embedding Python in another application
 
-* link:rootfs_overlay/lkmc/python/hello.py[]: hello world
+Here we will add some better examples and explanations for: https://docs.python.org/3/extending/embedding.html#very-high-level-embedding
+
+"Embedding Python" basically means calling the Python interpreter from C, and possibly passing values between the two.
+
+These examples show to to embed the Python interpreter into a C/C++ application to interface between them
+
+* link:userland/libs/python_embed/eval.c[]: this example simply does `eval` a Python string in C, and don't communicate any values between the two.
++
+It could be used to call external commands that have external side effects, but it is not very exciting.
+* link:userland/libs/python_embed/pure.c[]: this example actually defines some Python classes and functions from C, implementing those entirely in C.
++
+The C program that defines those classes then instantiates the interpreter calls some regular Python code from it: link:userland/libs/python_embed/pure.py[]
++
+The regular Python code can then use the native C classes as if they were defined in Python.
++
+Finally, the Python returns values back to the C code that called the interpreter.
+* link:userland/libs/python_embed/pure_cpp.cpp[]: C++ version of the above, the main goal of this example is to show how to interface with C++ classes.
++
+See also: https://stackoverflow.com/questions/2200912/inheritance-in-python-c-extension/60436902#60436902
+
+One notable user of Python embedding is the <<gem5>> simulator, see also: <<gem5-vs-qemu>>. gem5 embeds the Python interpreter in order to interpret scripts as seen from the CLI:
+
+....
+build/ARM/gem5.opt configs/example/fs.py
+....
+
+gem5 then runs that Python script, which instantiates C++ classes defined from Python, and then finally hands back control to the C++ runtime to run the actual simulation faster.
+
+===== pybind11
+
+link:userland/libs/pybind11[]
+
+https://stackoverflow.com/questions/145270/calling-c-c-from-python/60374990#60374990
+
+pybind11 is amazingly easy to use. But it also makes your builds really slow: <<pybind11-accounts-for-50-of-gem5-build-time>>.
 
 ==== Node.js
 
@@ -15124,6 +16434,24 @@ Tests under link:userland/libs[] require certain optional libraries to be instal
 
 See for example <<blas>>.
 
+===== HDF5
+
+https://en.wikipedia.org/wiki/Hierarchical_Data_Format
+
+Binary format to store data. TODO vs databases, notably SQLite: https://datascience.stackexchange.com/questions/262/hierarchical-data-format-what-are-the-advantages-compared-to-alternative-format
+
+Examples: link:userland/libs/hdf5[]
+
+=== Userland content filename conventions
+
+The following basenames should always refer to programs that do the same thing, but in different languages:
+
+* `count`: count to infinity, sleep one second between each number
+** link:rootfs_overlay/lkmc/count.sh[]
+** link:rootfs_overlay/lkmc/python/count.py[]
+** link:userland/cpp/count.cpp[]
+** link:userland/posix/count.c[]
+
 === Userland content bibliography
 
 * The Linux Programming Interface by Michael Kerrisk https://www.amazon.co.uk/Linux-Programming-Interface-System-Handbook/dp/1593272200 Lots of open source POSIX examples: https://github.com/cirosantilli/linux-programming-interface-kerrisk
@@ -15457,20 +16785,20 @@ Here is a tiny example that calls just `exit` from the C standard library:
 
 main.S
 
-```
+....
 .global _start
 _start:
     mov $0, %rdi
     call exit
 
-```
+....
 
 Compile and run with:
 
-```
+....
 gcc -ggdb3 -nostartfiles -static -o exit.out exit.S
 qemu-x86_64 -d in_asm exit.out
-```
+....
 
 However, for programming convenience, and to potentially keep my examples more OS portable, I would like to avoid making raw system calls, which would of course work, by using C standard library functions instead.
 
@@ -19708,56 +21036,81 @@ Summary of manually collected results on <<p51>> at LKMC a18f28e263c91362519ef55
 .Busy loop MIPS for different simulator setups
 [options="header"]
 |===
-|LKMC |Benchmark build |Emulator command |Loops |Time (s) |Instruction count |Approximate MIPS
+|Comment |LKMC |Benchmark build |Emulator command |Loops |Time (s) |Instruction count |Approximate MIPS
 
+|QEMU busy loop
 |a18f28e263c91362519ef550150b5c9d75fa3679 + 1
 |link:userland/gcc/busy_loop.c[] `-O0`
-|`qemu --arch aarch64`
+|`./run --arch aarch64 --userland userland/gcc/busy_loop.c `
 |10^10
 |68
 |1.1 * 10^11 (approx)
 |2000
 
+|gem5 busy loop
 |a18f28e263c91362519ef550150b5c9d75fa3679 + 1
 |link:userland/gcc/busy_loop.c[] `-O0`
-|`gem5 --arch aarch64`
-|10^7
-|100
-|1.10018162 * 10^8
-|1
+|`./run --arch aarch64 --emulator gem5 --static --userland userland/gcc/busy_loop.c --userland-args 1000000`
+|10^6
+|18
+|2.4005699 * 10^7
+|1.3
 
+|gem5 busy loop for a debug build
 |a18f28e263c91362519ef550150b5c9d75fa3679 + 1
 |link:userland/gcc/busy_loop.c[] `-O0`
-|`gem5 --arch aarch64 --gem5-build-id debug`
+|`./run --arch aarch64 --emulator gem5 --gem5-build-type debug --static --userland userland/gcc/busy_loop.c --userland-args 100000`
 |10^5
-|32
-|2.528728 * 10^6
-|0.08
+|33
+|2.405682 * 10^6
+|0.07
 
+|gem5 busy loop for a fast build
+|0d5a41a3f88fcd7ed40fc19474fe5aed0463663f + 1
+|link:userland/gcc/busy_loop.c[] `-O0 -static`
+|`./run --arch aarch64 --emulator gem5 --gem5-build-type fast --static --userland userland/gcc/busy_loop.c --userland-args 1000000`
+|10^6
+|15
+|2.4005699 * 10^7
+|1.6
+
+|gem5 busy loop for a <<gem5-cpu-types,TimingSimpleCPU>>
 |a18f28e263c91362519ef550150b5c9d75fa3679 + 1
 |link:userland/gcc/busy_loop.c[] `-O0`
-|`+gem5 --arch aarch64 -- --cpu-type MinorCPU --caches+`
+|`+./run --arch aarch64 --emulator gem5 --arch aarch64 --static --userland userland/gcc/busy_loop.c --userland-args 1000000 -- --cpu-type TimingSimpleCPU --caches+`
+|10^6
+|26
+|2.4005699 * 10^7
+|0.9
+
+|gem5 busy loop for a <<gem5-cpu-types,MinorCPU>>
+|a18f28e263c91362519ef550150b5c9d75fa3679 + 1
+|link:userland/gcc/busy_loop.c[] `-O0`
+|`+./run --arch aarch64 --emulator gem5 --arch aarch64 --userland userland/gcc/busy_loop.c --userland-args 1000000 -- --cpu-type MinorCPU --caches+`
 |10^6
 |31
 |1.1018152 * 10^7
 |0.4
 
+|gem5 busy loop for a <<gem5-cpu-types,DerivO3CPU>>
 |a18f28e263c91362519ef550150b5c9d75fa3679 + 1
 |link:userland/gcc/busy_loop.c[] `-O0`
-|`+gem5 --arch aarch64 -- --cpu-type DerivO3CPU --caches+`
+|`+./run --arch aarch64 --emulator gem5 --userland userland/gcc/busy_loop.c --userland args 1000000 -- --cpu-type DerivO3CPU --caches+`
 |10^6
 |52
 |1.1018128 * 10^7
 |0.2
 
+|
 |a18f28e263c91362519ef550150b5c9d75fa3679 + 1
 |link:userland/gcc/busy_loop.c[] `-O0`
-|`+gem5 --arch aarch64 --gem5-build-id MOESI_CMP_directory -- --cpu-type DerivO3CPU --caches --ruby+`
+|`+./run --arch aarch64 --emulator gem5 --gem5-build-id MOESI_CMP_directory -- --cpu-type DerivO3CPU --caches --ruby+`
 |1 * 1000000 = 10^6
 |63
 |1.1005150 * 10^7
 |0.2
 
+|
 |605448f07e6380634b1aa7e9732d111759f69fd
 |<<dhrystone>> `-O3`
 |`gem5 --arch aarch64`
@@ -19766,22 +21119,25 @@ Summary of manually collected results on <<p51>> at LKMC a18f28e263c91362519ef55
 |9.2034139 * 10^7
 |1.6
 
+|
 |5d233f2664a78789f9907d27e2a40e86cefad595
 |<<stream-benchmark>> `-O3`
-|`gem5 --arch aarch64 --userland-args 300000 2`
+|`./run --arch aarch64 --emulator gem5 --userland userland/gcc/busy_loop.c --userland-args 1000000 --trace ExecAll`
 |3 * 10^5 * 2
 |64
 |9.9674773 * 10^7
 |1.6
 
+|glibc C pre-main effects
 |ab6f7331406b22f8ab6e2df5f8b8e464fb35b611
-|glibc C pre-main link:userland/c/m5ops.c[] `-O0`
+|link:userland/c/m5ops.c[] `-O0`
 |`gem5 --arch aarch64 --userland-args e`
 |1
 |2
 |1.26479 * 10^5
 |0.05
 
+|
 |ab6f7331406b22f8ab6e2df5f8b8e464fb35b611
 |glibc C pre-main link:userland/c/m5ops.c[] `-O0`
 |`gem5 --arch aarch64 --userland-args e --gem5-build-type debug`
@@ -19790,6 +21146,7 @@ Summary of manually collected results on <<p51>> at LKMC a18f28e263c91362519ef55
 |1.26479 * 10^5
 |0.05
 
+|
 |ab6f7331406b22f8ab6e2df5f8b8e464fb35b611
 |glibc C++ pre-main link:userland/cpp/m5ops.cpp[] `-O0`
 |`gem5 --arch aarch64 --userland-args e`
@@ -19798,6 +21155,7 @@ Summary of manually collected results on <<p51>> at LKMC a18f28e263c91362519ef55
 |2.385012 * 10^6
 |1
 
+|
 |ab6f7331406b22f8ab6e2df5f8b8e464fb35b611
 |glibc C++ pre-main link:userland/cpp/m5ops.cpp[] `-O0`
 |`gem5 --arch aarch64 --userland-args e --gem5-build-type debug`
@@ -19806,21 +21164,41 @@ Summary of manually collected results on <<p51>> at LKMC a18f28e263c91362519ef55
 |2.385012 * 10^6
 |0.1
 
+|gem5 optimized build immediate exit on first instruction to benchmark the simulator startup time
 |ab6f7331406b22f8ab6e2df5f8b8e464fb35b611
-|immediate exit link:userland/arch/aarch64/freestanding/linux/gem5_exit.S[] `-O0`
+|immediate exit link:userland/freestanding/gem5_exit.S[] `-O0`
 |`gem5 --arch aarch64`
 |1
 |1
-|
+|1
 |
 
+|same as above but debug build
 |ab6f7331406b22f8ab6e2df5f8b8e464fb35b611
-|immediate exit link:userland/arch/aarch64/freestanding/linux/gem5_exit.S[] `-O0`
+|link:userland/freestanding/gem5_exit.S[] `-O0`
 |`gem5 --arch aarch64 --gem5-build-type debug`
 |1
 |1
+|1
 |
-|
+
+|Check the effect of an ExecAll log (log every instruction) on execution time, compare to analogous run without it. `trace.txt` size: 3.5GB. 5x slowdown observed with output to a hard disk.
+|d29a07ddad499f273cc90dd66e40f8474b5dfc40
+|link:userland/gcc/busy_loop.c[] `-O0`
+|`./run --arch aarch64 --emulator gem5 --userland userland/gcc/busy_loop.c --userland-args 1000000 --gem5-worktree master --trace ExecAll`
+|10^6
+|2.4106774 * 10^7
+|136
+|0.2
+
+|Same as above but with run command manually hacked to output to a ramfs. Slightly faster, but the bulk was still just in log format operations!
+|d29a07ddad499f273cc90dd66e40f8474b5dfc40
+|link:userland/gcc/busy_loop.c[] `-O0`
+|`./run --arch aarch64 --emulator gem5 --userland userland/gcc/busy_loop.c --userland-args 1000000 --gem5-worktree master --trace ExecAll`
+|10^6
+|2.4106774 * 10^7
+|107
+|0.2
 
 |===
 
@@ -20046,7 +21424,7 @@ How long it takes to build gem5 itself.
 
 We will update this whenever the gem5 submodule is updated.
 
-Sample results at gem5 2a9573f5942b5416fb0570cf5cb6cdecba733392: 10 to 12 minutes.
+All benchmarks done on <<p51>>.
 
 Get results with:
 
@@ -20054,6 +21432,20 @@ Get results with:
 ./bench-all --emulator gem5
 tail -n+1 ../linux-kernel-module-cheat-regression/*/gem5-bench-build-*.txt
 ....
+
+Ubuntu 19.10, GCC 9.2.1, LKMC 7c6bb29bc89ec3f1056c0680c3f08bd64018a7bc, gem5 d7d9bc240615625141cd6feddbadd392457e49eb (2020-02-18), `./build --arch aarch64 --gem5-worktree master --no-cache`: 19m 33s TODO must investigate why it got so much worse.
+
+Same but gem5 d7d9bc240615625141cd6feddbadd392457e49eb (2018-06-17) hacked with `-Wnoerror`: 11m 37s. So there was a huge regression in the last two years! We have to find it out.
+
+A profiling of the build has been done at: https://gem5.atlassian.net/browse/GEM5-277
+
+====== pybind11 accounts for 50% of gem5 build time
+
+https://gem5.atlassian.net/browse/GEM5-366
+
+Yes, <<pybind11>> is slow to build.
+
+See also: <<gem5-python-c-interaction>>.
 
 ====== Benchmark gem5 single file change rebuild time
 
@@ -20092,14 +21484,9 @@ Tested at: d4b3e064adeeace3c3e7d106801f95c14637c12f + 1.
 
 ==== P51
 
-Lenovo ThinkPad https://www3.lenovo.com/gb/en/laptops/thinkpad/p-series/P51/p/22TP2WPWP51[P51 laptop]:
+Lenovo ThinkPad https://www3.lenovo.com/gb/en/laptops/thinkpad/p-series/P51/p/22TP2WPWP51[P51 laptop] with the Latest stable Ubuntu.
 
-* 2500 USD in 2018 (high end)
-* Intel Core i7-7820HQ Processor (8MB Cache, up to 3.90GHz) (4 cores 8 threads)
-* 32GB(16+16) DDR4 2400MHz SODIMM
-* 512GB SSD PCIe TLC OPAL2
-* NVIDIA Quadro M1200 Mobile, latest Ubuntu supported proprietary driver
-* Latest Ubuntu
+Full specs and benchmark scores will be maintained at the latest version of: https://github.com/cirosantilli/notes/blob/0c038b0e430d0017f12d028c6a0e7c0b99ec957f/my-hardware.adoc#thinkpad-p51
 
 === Benchmark Internets
 
@@ -20177,15 +21564,128 @@ The hard part is how to prevent the compiler from optimizing it away: https://st
 
 https://en.wikipedia.org/wiki/Cache_coherence
 
-Algorithms to keep the caches of different cores of a system coherent.
+Algorithms to keep the caches of different cores of a system coherent. Only matters for multicore systems.
 
-E.g.: if one processors writes to the cache, other processors have to know about it before they read from that address.
+The main goal of such systems is to reduce the number of messages that have to be sent on the coherency bus, and even more importantly, to memory (which passes first through the coherency bus).
 
-==== MSI protocol
+The main software use case example to have in mind is that of multiple threads incrementing an atomic counter as in link:userland/cpp/atomic/std_atomic.cpp[], see also: <<atomic-cpp>>. Then, if one processors writes to the cache, other processors have to know about it before they read from that address.
+
+Note that cache coherency only applies to memory read/write instructions that explicitly make coherency requirements.
+
+In most ISAs, this tends to be the minority of instructions, and is only used when something is going to modify memory that is known to be shared across threads. For example, the a <<x86-thread-synchronization-primitives, x86 LOCK>> would be used to increment atomic counters that get incremented across several threads. Outside of those cases, cache coherency is not garanteed, and behaviour is undefined.
+
+==== Can caches snoop data from other caches?
+
+Either they can snoop only control, or both control and data can be snooped.
+
+The answer to this determines if some of the following design decisions make sense.
+
+This is the central point in question at: https://electronics.stackexchange.com/questions/484830/why-is-a-flush-needed-in-the-msi-cache-coherency-protocol-when-moving-from-modif
+
+If data snoops are not possible, then data must always to to DRAM first.
+
+==== VI cache coherence protocol
+
+Mentioned at:
+
+* http://courses.csail.mit.edu/6.888/spring13/lectures/L7-coherence.pdf
+* http://csg.csail.mit.edu/6.823S16/lectures/L15.pdf
+
+This is the most trivial, but likely it is too bad and most sources don't even mention it.
+
+In what follows I make some stuff up with design choice comparisons, needs confirmation.
+
+In this protocol, every cache only needs a single bit of state: validity.
+
+At the start, everything is invalid.
+
+Then, when you need to read and are invalid, you send a read on bus. If there is another valid cache in another CPU, it services the request. Otherwise, goes the request goes to memory. After read you become valid.
+
+Read for valid generates no bus requests, which is good.
+
+When you write, if you are invalid, you must first read to get the full cache line, like for any other protocol.
+
+Then, there are two possible design choices, either:
+
+* that read is marked as exclusive, and all caches that had it, snoop it become invalid.
++
+Upside: no need to send the new data to the bus.
++
+Downside: more invalidations. But those are not too serious, because future invalid reads tend to just hit the remaining valid cache.
+* after the read and write, you send the data on the bus, and those that had it update and become valid.
++
+Downside: much more data on bus, so likely this is not going to be the best choice.
+
+So we take the first option.
+
+When you write and are valid, you don't need to read. But you still have invalidate everyone else, because multiple reads can lead to multiple valid holders, otherwise other valid holders would keep reading old values.
+
+We could either do this with an exclusive read, and ignore the return, or with a new Invalidate request that has no reply. This invalidation is called `BusUpgr` to match with Wikipedia.
+
+Write also has two other possible design choices, either:
+
+* every write writes through to memory. This is likely never the best option.
+* when the cache is full, eviction leads to a write to memory.
++
+If multiple valid holders may exist, then this may lead to multiple write through evictions of the same thing.
+
+So we take the second option.
+
+With this we would have:
+
+* V
+** PrRd
+*** V
+***
+** PrWr
+*** V
+*** BusUpgr
+** BusRd
+*** V
+*** BusData
+** BusRdX
+*** I
+*** BusData
+** BusUpgr
+*** I
+***
+* I
+** PrRd
+*** V
+*** BusRd
+** PrWr
+*** V
+*** BusRdX
+** BusRd
+*** I
+***
+** BusRdX
+*** I
+***
+** BusUpgr
+*** I
+***
+
+Here Flush and BusData replies are omitted since those never lead to a change of state, nor to the sending of further messages.
+
+TODO at:
+
+* http://courses.csail.mit.edu/6.888/spring13/lectures/L7-coherence.pdf
+* http://csg.csail.mit.edu/6.823S16/lectures/L15.pdf
+
+why PrWr stays in invalid? Why do writes always go to memory? Why not wait until eviction?
+
+==== MSI cache coherence protocol
 
 https://en.wikipedia.org/wiki/MSI_protocol
 
 This is the most basic non-trivial coherency protocol, and therefore the first one you should learn.
+
+Compared to the <<vi-cache-coherence-protocol>>, MSI:
+
+* adds one bit of knowledge per cache line (shared)
+* splits Valid into Modified and Shared depending on the shared bit
+* this allows us to not send BusUpgr messages on the bus when writing to Modified, since we now we know that the data is not present in any other cache!
 
 Helpful video: https://www.youtube.com/watch?v=gAUVAel-2Fg "MSI Coherence - Georgia Tech - HPCA: Part 5" by Udacity.
 
@@ -20260,6 +21760,8 @@ That's why this request can also be called "Read Exclusive", as it is basically 
 ** "Invalidate": the cache wants to modify some data, but it knows that all other caches are up to date, because it is in shared state.
 +
 Therefore, it does not need to fetch the data, which saves bus traffic compared to "Bus write" since the data itself does not need to be sent.
++
+This is also called a Bus Upgrade message or BusUpgr, as it informs others that the value is going to be upgraded.
 ** "Write back": send the data on the bus and tell someone to pick it up: either DRAM or another cache
 
 When a message is sent to the bus:
@@ -20284,7 +21786,7 @@ And finally, the transitions are:
 +
 Since we know what the latest data is, we can move to "Shared" rather than "Invalid" to possibly save time on future reads.
 +
-But to do that, we need to write the data back to DRAM to maintain the shared state consistent. The <<mesi-protocol>> prevents that extra read in some cases.
+But to do that, we need to write the data back to DRAM to maintain the shared state consistent. The <<mesi-cache-coherence-protocol>> prevents that extra read in some cases.
 +
 And it has to be either: before the other cache gets its data from DRAM, or better, the other cache can get its data from our write back itself just like the DRAM.
 +
@@ -20295,6 +21797,8 @@ And it has to be either: before the other cache gets its data from DRAM, or bett
 We don't know what they will write, so the best bet is to move to invalid.
 +
 Since the writer will become the new sole data owner, the writer can get the cache from us without going to DRAM at all! This is fine, because the writer will be the new sole owner of the line, so DRAM can remain dirty without problems.
++
+TODO Wikipedia requires a Flush there, why? https://electronics.stackexchange.com/questions/484830/why-is-a-flush-needed-in-the-msi-cache-coherency-protocol-when-moving-from-modif
 +
 *** Move to: Invalid
 *** Send message: "Write back"
@@ -20313,33 +21817,68 @@ Since the writer will become the new sole data owner, the writer can get the cac
 
 TODO gem5 concrete example.
 
-==== MESI protocol
+===== MSI cache coherence protocol with transient states
+
+TODO underestand well why those are needed.
+
+* http://learning.gem5.org/book/part3/MSI/directory.html
+* https://www.researchgate.net/figure/MSI-Protocol-with-Transient-States-Adapted-from-30_fig3_2531432
+* http://csg.csail.mit.edu/6.823S16/lectures/L15.pdf page 28
+
+==== MESI cache coherence protocol
 
 https://en.wikipedia.org/wiki/MESI_protocol
 
-Splits the Shared of <<msi-protocol>> into a new Exclusive state:
+Splits the Shared of <<msi-cache-coherence-protocol>> into a new Exclusive state:
 
 * MESI Exclusive: clean but only present in one cache
-* MESI Shared: clean but may be present in more that one cache
+* MESI Shared: clean but present in more that one cache
 
-TODO advantage: I think the advantages over MSI are:
+Exclusive is entered from Invalid after a PrRd, but only if the reply came from DRAM (<<can-caches-snoop-data-from-other-caches,or if we snoped that no one sent the reply to DRAM for us to read it>>)! If the reply came from another cache, we go directly to shared instead. It is this extra information that allows for the split of S.
 
-* when we move from Exclusive to Shared, no DRAM write back is needed, because we know that the cache is clean
-* when we move from Exclusive to Modified, no invalidate message is required, reducing bus traffic
+The advantage of this over MSI is that when we move from Exclusive to Modified, no invalidate message is required, reducing bus traffic: https://en.wikipedia.org/wiki/MESI_protocol#Advantages_of_MESI_over_MSI
 
-Exclusive is entered from Invalid after a "Local read", but only if the reply came from DRAM! If the reply came from another cache, we go directly to shared instead.
+This is a common case on read write modify loops. On MSI, it would first do PrRd, send BusRd (to move any M to S), get data, and go to Shared, then PrWr must send BusUpgr to invalidate other Shared and move to M.
 
-==== MOSI protocol
+With MESI, the PrRd could go to E instead of S depending on who services it. If it does go to E, then the PrWr only moves it to M, there is no need to send BusUpgr because we know that no one else is in S.
 
-https://en.wikipedia.org/wiki/MOSI_protocol
+gem5 12c917de54145d2d50260035ba7fa614e25317a3 has two <<gem5-ruby-build,Ruby>> MESI models implemented: `MESI_Two_Level` and `MESI_Three_Level`.
 
-TODO compare to MSI and understand advantages. From Wikipedia it seems that MOSI can get data from the Owned cache while MSI cannot get data from Shared caches and must go to memory, but why not? Why do we need that Owned? Is it because there are multiple Shared caches and them all replying at the same time would lead to problems?
+==== MOSI cache coherence protocol
 
-==== MOESI protocol
+https://en.wikipedia.org/wiki/MOSI_protocol The critical MSI vs MOSI section was a bit bogus though: https://en.wikipedia.org/w/index.php?title=MOSI_protocol&oldid=895443023 we have to edit it.
+
+In MSI, it feels wasteful that an MS transaction needs to flush to memory: why do we need to flush right now, since even more caches now have that data? Why not wait until later ant try to gain something from this deferral?
+
+The problem with doing that in MSI, is that not flushing on an MS transaction would force us to every S eviction. So we would end up flushing even after reads!
+
+MOSI solves that by making M move to O instead of S on BusRd. Now, O is the only responsible for the flush back on eviction.
+
+So, in case we had:
+
+* processor 1: M
+* processor 2: I then read
+* processor 1: write
+
+An MSI cahe 1 would do:
+
+* write to main memory, go to S
+* BusUpgr, go back to M, 2 back to I
+
+and MOSI would do:
+
+* go to O (no bus traffic)
+* BusUpgr, go back to M
+
+This therefore saves one memory write through and its bus traffic.
+
+==== MOESI cache coherence protocol
 
 https://en.wikipedia.org/wiki/MOESI_protocol
 
-<<mesi-protocol>> + <<mosi-protocol>>, not much else to it!
+<<mesi-cache-coherence-protocol>> + <<mosi-cache-coherence-protocol>>, not much else to it!
+
+gem5 12c917de54145d2d50260035ba7fa614e25317a3 has several <<gem5-ruby-build,Ruby>> MOESI models implemented: `MOESI_AMD_Base`, `MOESI_CMP_directory`, `MOESI_CMP_token` and `MOESI_hammer`.
 
 == About this repo
 
@@ -20640,6 +22179,14 @@ We have https://buildroot.org/downloads/manual/manual.html#ccache[enabled ccache
 
 * absolute paths are used and GDB can find source files
 * but builds are not reused across separated LKMC directories
+
+ccache can be disabled with the `--no-ccache` option as in:
+
+....
+./build-gem5 --no-ccache
+....
+
+This can be useful to <<benchmark-builds,benchmark builds>>.
 
 === getvar
 

@@ -150,6 +150,9 @@ consts['build_type_choices'] = [
     # -O0 -g
     'debug'
 ]
+consts['gem5_build_type_choices'] = consts['build_type_choices'] + [
+    'fast', 'prof', 'perf',
+]
 consts['build_type_default'] = 'opt'
 # Files whose basename start with this are gitignored.
 consts['tmp_prefix'] = 'tmp.'
@@ -218,6 +221,13 @@ CPU architecture to use. If given multiple times, run the action
 for each arch sequentially in that order. If one of them fails, stop running.
 Valid archs: {}
 '''.format(arches_string)
+        )
+        self.add_argument(
+            '--ccache',
+            default=True,
+            help='''\
+Enable or disable ccache: https://cirosantilli.com/linux-kernel-module-cheat#ccache
+'''
         )
         self.add_argument(
             '--dry-run',
@@ -333,7 +343,7 @@ Default: {}
         )
         self.add_argument(
             '--gem5-build-type',
-            choices=consts['build_type_choices'],
+            choices=consts['gem5_build_type_choices'],
             default=consts['build_type_default'],
             help='gem5 build type, most often used for "debug" builds.'
         )
@@ -841,7 +851,7 @@ Incompatible archs are skipped.
         # gem5
         if not env['_args_given']['gem5_build_dir']:
             env['gem5_build_dir'] = join(env['gem5_out_dir'], env['gem5_build_id'])
-        env['gem5_fake_iso'] = join(env['gem5_out_dir'], 'fake.iso')
+        env['gem5_test_binaries_dir'] = join(env['gem5_out_dir'], 'test_binaries')
         env['gem5_m5term'] = join(env['gem5_build_dir'], 'm5term')
         env['gem5_build_build_dir'] = join(env['gem5_build_dir'], 'build')
         env['gem5_executable_dir'] = join(env['gem5_build_build_dir'], env['gem5_arch'])
@@ -849,6 +859,15 @@ Incompatible archs are skipped.
         env['gem5_executable'] = self.get_gem5_target_path(env, 'gem5')
         env['gem5_unit_test_target'] = self.get_gem5_target_path(env, 'unittests')
         env['gem5_system_dir'] = join(env['gem5_build_dir'], 'system')
+        env['gem5_system_binaries_dir'] = join(env['gem5_system_dir'], 'binaries')
+        if self.env['is_arm']:
+            if env['arch'] == 'arm':
+                gem5_bootloader_basename = 'boot.arm'
+            elif env['arch'] == 'aarch64':
+                gem5_bootloader_basename = 'boot.arm64'
+            env['gem5_bootloader'] = join(env['gem5_system_binaries_dir'], gem5_bootloader_basename)
+        else:
+            env['gem5_bootloader'] = None
 
         # gem5 source
         if env['_args_given']['gem5_source_dir']:
@@ -1053,7 +1072,7 @@ Incompatible archs are skipped.
 
         # Image
         if env['baremetal'] is not None:
-            env['disk_image'] = env['gem5_fake_iso']
+            env['disk_image'] = None
             env['image'] = self.resolve_baremetal_executable(env['baremetal'])
             source_path_noext = os.path.splitext(join(
                 env['root_dir'],
@@ -1082,7 +1101,7 @@ Incompatible archs are skipped.
                 if not env['_args_given']['linux_exec']:
                     env['image'] = env['vmlinux']
                 if env['ramfs']:
-                    env['disk_image'] = env['gem5_fake_iso']
+                    env['disk_image'] = None
                 else:
                     env['disk_image'] = env['rootfs_raw_file']
             else:
@@ -1596,31 +1615,44 @@ class BuildCliFunction(LkmcCliFunction):
 Pass the given compiler flags to all languages (C, C++, Fortran, etc.)
 ''',
             },
+            '--configure': {
+                'default': True,
+                'help': '''\
+Also run the configuration step during build.
+''',
+            },
             '--force-rebuild': {
                 'default': False,
                 "help": '''\
 Force rebuild even if sources didn't change.
 ''',
             },
-            '--configure': {
-                'default': True,
-                "help": '''\
-Also run the configuration step during build.
-''',
-            },
             '--optimization-level': {
                 'default': '0',
-                'help': '''
+                'help': '''\
 Use the given GCC -O optimization level.
 For some scripts, there are hard technical challenges why it cannot
 be implemented, e.g.: https://cirosantilli.com/linux-kernel-module-cheat#kernel-o0
 and for others such as gem5 have their custom mechanism:
 https://cirosantilli.com/linux-kernel-module-cheat#gem5-debug-build
 ''',
-            }
+            },
+            'extra_make_args': {
+                'default': [],
+                'help': '''\
+Extra arguments to pass to the Make command or analogous final build command,
+after configure, e.g. SCons. Usually contains specific targets or other build flags.
+''',
+                'metavar': 'extra-make-args',
+                'nargs': '*',
+            },
         }
 
     def _add_argument(self, argument_name):
+        '''
+        Enable build argument with a fixed name to provide an uniform CLI API
+        across different builds.
+        '''
         self.add_argument(
             argument_name,
             **self._build_arguments[argument_name]
@@ -1739,19 +1771,26 @@ https://cirosantilli.com/linux-kernel-module-cheat#gem5-debug-build
                                             # Header only.
                                             'cc_flags_after': [],
                                         },
+                                        'hdf5': {
+                                            'pkg_config_id': 'hdf5-serial',
+                                        },
                                     }
                                     package_key = dirpath_relative_root_components[2]
                                     if package_key in packages:
                                         package = packages[package_key]
                                     else:
                                         package = {}
+                                    if 'pkg_config_id' in package:
+                                        pkg_config_id = package['pkg_config_id']
+                                    else:
+                                        pkg_config_id = package_key
                                     if 'cc_flags' in package:
                                         cc_flags.extend(package['cc_flags'])
                                     else:
                                         pkg_config_output = self.sh.check_output([
                                             self.env['pkg_config'],
                                             '--cflags',
-                                            package_key
+                                            pkg_config_id
                                         ]).decode()
                                         cc_flags.extend(self.sh.shlex_split(pkg_config_output))
                                     if 'cc_flags_after' in package:
@@ -1760,7 +1799,7 @@ https://cirosantilli.com/linux-kernel-module-cheat#gem5-debug-build
                                         pkg_config_output = subprocess.check_output([
                                             self.env['pkg_config'],
                                             '--libs',
-                                            package_key
+                                            pkg_config_id
                                         ]).decode()
                                         cc_flags_after.extend(self.sh.shlex_split(pkg_config_output))
                 os.makedirs(os.path.dirname(out_path), exist_ok=True)

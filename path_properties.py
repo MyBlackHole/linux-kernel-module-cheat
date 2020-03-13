@@ -59,7 +59,10 @@ class PathProperties:
         'minimum_gcc_version': (0, 0, 0),
         # The script takes a perceptible amount of time to run. Possibly an infinite loop.
         'more_than_1s': False,
-        # The path should not be built. E.g., it is symlinked into multiple archs.
+        # The path should not be built. E.g.:
+        # - it is symlinked into multiple archs
+        # - we have not integrated into the build yet, often it is being important from another repo
+        #   and has a Makefile
         'no_build': False,
         # The path does not generate an executable in itself, e.g.
         # it only generates intermediate object files. Therefore it
@@ -543,7 +546,6 @@ path_properties_tuples = (
                                         'linux': (
                                             {},
                                             {
-                                                'gem5_exit.S': {'allowed_emulators': {'gem5'}},
                                                 'wfe.S': {'more_than_1s': True},
                                                 'wfe_wfe.S': {'more_than_1s': True},
                                             }
@@ -678,6 +680,13 @@ path_properties_tuples = (
                         'thread_return_value.cpp': {'test_run_args': {'cpus': 2}},
                     },
                 ),
+                'freestanding': (
+                    freestanding_properties,
+                    {
+                        'gem5_checkpoint_restore.S': {'allowed_emulators': {'gem5'}},
+                        'gem5_exit.S': {'allowed_emulators': {'gem5'}},
+                    }
+                ),
                 'gcc': (
                     {**gnu_extension_properties, **{'cc_pedantic': False}},
                     {
@@ -689,7 +698,19 @@ path_properties_tuples = (
                 'libs': (
                     {'requires_dynamic_library': True},
                     {
+                        'cython': {'no_build': True},
                         'libdrm': {'requires_sudo': True},
+                        'hdf5': (
+                            {},
+                            {
+                                'hello_cpp.cpp': {
+                                    'cc_flags_after': ['-lhdf5_cpp', LF],
+                                },
+                            }
+                        ),
+                        # Makefile build, generates shared libraries.
+                        'pybind11': {'no_build': True},
+                        'python_embed': {'no_build': True},
                     }
                 ),
                 'linux': (

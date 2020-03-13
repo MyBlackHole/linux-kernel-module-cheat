@@ -471,11 +471,7 @@ Extra options to append at the end of the emulator command line.
         if self.env['emulator'] == 'gem5':
             if self.env['quiet']:
                 show_stdout = False
-            if not self.env['baremetal'] is None:
-                if not os.path.exists(self.env['gem5_fake_iso']):
-                    os.makedirs(os.path.dirname(self.env['gem5_fake_iso']), exist_ok=True)
-                    self.sh.write_string_to_file(self.env['gem5_fake_iso'], 'a' * 512)
-            elif self.env['userland'] is None:
+            if self.env['baremetal'] is None and self.env['userland'] is None:
                 if not os.path.exists(self.env['rootfs_raw_file']):
                     if not os.path.exists(self.env['qcow2_file']):
                         raise_rootfs_not_found()
@@ -486,7 +482,6 @@ Extra options to append at the end of the emulator command line.
             gem5_exe_args = self.sh.shlex_split(self.env['gem5_exe_args'])
             if do_trace:
                 gem5_exe_args.extend(['--debug-flags', trace_type, LF])
-            extra_env['M5_PATH'] = self.env['gem5_system_dir']
             # https://stackoverflow.com/questions/52312070/how-to-modify-a-file-under-src-python-and-run-it-without-rebuilding-in-gem5/52312071#52312071
             extra_env['M5_OVERRIDE_PY_SOURCE'] = 'true'
             if self.env['trace_stdout']:
@@ -502,6 +497,12 @@ Extra options to append at the end of the emulator command line.
                 ] +
                 gem5_exe_args
             )
+            if self.env['gem5_restore'] is not None:
+                # https://cirosantilli.com/linux-kernel-module-cheat#gem5-checkpoint-internals
+                cpt_dirs = self.gem5_list_checkpoint_dirs()
+                cpt_dir = cpt_dirs[-self.env['gem5_restore']]
+                cpt_dirs_sorted_by_tick = sorted(cpt_dirs, key=lambda x: int(x.split('.')[1]))
+                extra_emulator_args.extend(['-r', str(cpt_dirs_sorted_by_tick.index(cpt_dir) + 1)])
             if self.env['userland'] is not None:
                 cmd.extend([
                     self.env['gem5_se_file'], LF,
@@ -529,19 +530,14 @@ Extra options to append at the end of the emulator command line.
                     cmd.extend(['--interp-dir', self.env['userland_library_dir'], LF])
             else:
                 if self.env['gem5_script'] == 'fs':
-                    if self.env['gem5_restore'] is not None:
-                        # https://cirosantilli.com/linux-kernel-module-cheat#gem5-checkpoint-internals
-                        cpt_dirs = self.gem5_list_checkpoint_dirs()
-                        cpt_dir = cpt_dirs[-self.env['gem5_restore']]
-                        cpt_dirs_sorted_by_tick = sorted(cpt_dirs, key=lambda x: int(x.split('.')[1]))
-                        extra_emulator_args.extend(['-r', str(cpt_dirs_sorted_by_tick.index(cpt_dir) + 1)])
                     cmd.extend([
                         self.env['gem5_fs_file'], LF,
-                        '--disk-image', self.env['disk_image'], LF,
                         '--kernel', self.env['image'], LF,
                         '--num-cpus', str(self.env['cpus']), LF,
                         '--script', self.env['gem5_readfile_file'], LF,
                     ])
+                    if self.env['disk_image'] is not None:
+                        cmd.extend(['--disk-image', self.env['disk_image'], LF])
                     if self.env['arch'] == 'x86_64':
                         if self.env['kvm']:
                             cmd.extend(['--cpu-type', 'X86KvmCPU', LF])
@@ -609,11 +605,12 @@ Extra options to append at the end of the emulator command line.
                         '--bootscript', self.env['gem5_readfile_file'], LF,
                         '--big-cpus', str((self.env['cpus'] + 1) // 2), LF,
                         '--cpu-type', cpu_type, LF,
-                        '--disk', self.env['disk_image'], LF,
                         '--kernel', self.env['image'], LF,
                         '--little-cpus', str(self.env['cpus'] // 2), LF,
                         '--root', '/dev/vda', LF,
                     ])
+                    if self.env['disk_image'] is not None:
+                        cmd.extend(['--disk', self.env['disk_image'], LF])
                     if self.env['dtb']:
                         cmd.extend([
                             '--dtb',
@@ -624,6 +621,9 @@ Extra options to append at the end of the emulator command line.
                             ),
                             LF
                         ])
+                if self.env['gem5_script'] == 'fs' or self.env['gem5_script'] == 'biglittle':
+                    if self.env['gem5_bootloader'] is not None:
+                        cmd.extend(['--bootloader', self.env['gem5_bootloader'], LF])
             cmd.extend(['--mem-size', memory, LF])
             if self.env['gdb_wait']:
                 # https://stackoverflow.com/questions/49296092/how-to-make-gem5-wait-for-gdb-to-connect-to-reliably-break-at-start-kernel-of-th
@@ -747,6 +747,12 @@ Extra options to append at the end of the emulator command line.
                             if not os.path.exists(self.env['rootfs_raw_file']):
                                 raise_rootfs_not_found()
                             self.raw_to_qcow2(qemu_which=self.env['qemu_which'])
+                        if rr:
+                            extra_emulator_args.extend([
+                            '-drive', 'driver=blkreplay,if=none,image=img-direct,id=img-blkreplay', LF,
+                            '-device', 'ide-hd,drive=img-blkreplay', LF,
+                        ])
+                    if self.env['disk_image'] is not None:
                         extra_emulator_args.extend([
                             '-drive',
                             'file={},format=qcow2,if={}{}{}'.format(
@@ -756,11 +762,6 @@ Extra options to append at the end of the emulator command line.
                                 rrid
                             ),
                             LF,
-                        ])
-                        if rr:
-                            extra_emulator_args.extend([
-                            '-drive', 'driver=blkreplay,if=none,image=img-direct,id=img-blkreplay', LF,
-                            '-device', 'ide-hd,drive=img-blkreplay', LF,
                         ])
                 if rr:
                     extra_emulator_args.extend([
@@ -790,7 +791,10 @@ Extra options to append at the end of the emulator command line.
                 '-cpu', cpu, LF,
             ])
         if self.env['tmux']:
-            tmux_args = '--run-id {}'.format(self.env['run_id'])
+            tmux_args = "--gem5-build-id '{}' --run-id {}".format(
+                self.env['gem5_build_id'],
+                self.env['run_id']
+            )
             if self.env['tmux_program'] == 'shell':
                 if self.env['emulator'] == 'gem5':
                     tmux_cmd = os.path.join(self.env['root_dir'], 'gem5-shell')
@@ -802,12 +806,11 @@ Extra options to append at the end of the emulator command line.
                 # Part of me wants to: https://github.com/jonathanslenders/pymux
                 # but it cannot be used as a library properly it seems, and it is
                 # slower than tmux.
-                tmux_args += " --arch {} --emulator '{}' --gcc-which '{}' --linux-build-id '{}' --run-id '{}' --userland-build-id '{}'".format(
+                tmux_args += " --arch {} --emulator '{}' --gcc-which '{}' --linux-build-id '{}' --userland-build-id '{}'".format(
                     self.env['arch'],
                     self.env['emulator'],
                     self.env['gcc_which'],
                     self.env['linux_build_id'],
-                    self.env['run_id'],
                     self.env['userland_build_id'],
                 )
                 if self.env['baremetal']:
